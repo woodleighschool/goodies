@@ -1,3 +1,26 @@
+# Go
+*.test
+
+# Node.js
 node_modules/
 dist/
 *.tgz
+
+# Local data
+/.local/
+/data/
+
+# Local configuration
+.env
+.env.*
+!.env.example
+
+# Local Mise
+.mise.local.toml
+.mise.local.lock
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
