@@ -1,0 +1,11 @@
+{
+  "$schema": "https://raw.githubusercontent.com/release-please-oss/release-please/main/schemas/config.json",
+  "include-component-in-tag": true,
+  "include-v-in-tag": true,
+  "tag-separator": "/",
+  "separate-pull-requests": false,
+  "packages": {
+    "auth": { "component": "auth", "release-type": "go", "initial-version": "0.1.0" },
+    "packages/authz": { "component": "authz", "release-type": "node", "initial-version": "0.1.0" }
+  }
+}

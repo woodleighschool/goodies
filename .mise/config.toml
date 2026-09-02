@@ -1,0 +1,53 @@
+[tools]
+go = "1.27.0"
+node = "26.8.1"
+pnpm = "11.25.0"
+actionlint = "1.7.12"
+zizmor = "1.30.0"
+"go:golang.org/x/vuln/cmd/govulncheck" = "1.7.0"
+
+[settings]
+experimental = true
+lockfile = true
+
+[tasks.deps]
+run = ["go -C auth mod download", "pnpm install --frozen-lockfile"]
+
+[tasks.test]
+run = ["go test -race -count=1 ./auth/...", "pnpm test"]
+
+[tasks.check]
+run = [
+  { task = "fmt-check" },
+  { task = "lint" },
+  { task = "test" },
+  { task = "test-module" },
+  { task = "build" },
+  { task = "workflow-lint" },
+  { task = "vulncheck" },
+]
+
+[tasks.test-module]
+dir = "auth"
+env.GOWORK = "off"
+run = ["go vet ./...", "go test -race -count=1 ./...", "go mod tidy -diff"]
+
+[tasks.build]
+run = ["go build ./auth/...", "pnpm build"]
+
+[tasks.lint]
+run = ["go vet ./auth/...", "pnpm lint", "pnpm typecheck"]
+
+[tasks.format]
+run = ["gofmt -w auth", "pnpm format"]
+
+[tasks.fmt-check]
+run = ["test -z \"$(gofmt -l auth)\"", "pnpm format:check"]
+
+[tasks.workflow-lint]
+run = ["actionlint", "zizmor --min-severity medium --format plain .github/workflows"]
+
+[tasks.vulncheck]
+dir = "auth"
+env.GOWORK = "off"
+run = "govulncheck ./..."
