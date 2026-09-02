@@ -101,12 +101,17 @@ func (o Object) ETag() string {
 // ObjectStore applies Bloby's model around a persistence registry.
 type ObjectStore struct {
 	registry Registry
-	backend  BlobStore
+	backend  ObjectDeleter
 	logger   *slog.Logger
 }
 
+// ObjectDeleter removes stored bytes after a registry object is deleted.
+type ObjectDeleter interface {
+	Delete(ctx context.Context, key string) error
+}
+
 // NewObjectStore returns an object store composed from a registry and byte backend.
-func NewObjectStore(registry Registry, backend BlobStore, logger *slog.Logger) *ObjectStore {
+func NewObjectStore(registry Registry, backend ObjectDeleter, logger *slog.Logger) *ObjectStore {
 	return &ObjectStore{registry: registry, backend: backend, logger: logger}
 }
 
