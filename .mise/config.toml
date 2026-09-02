@@ -1,5 +1,6 @@
 [tools]
 go = "1.27.0"
+golangci-lint = "2.13.2"
 node = "26.8.1"
 pnpm = "11.25.0"
 actionlint = "1.7.12"
@@ -48,7 +49,13 @@ run = "go test -race -count=1 -tags=postgres ./bloby/..."
 run = ["go build ./auth/... ./bloby/...", "pnpm build"]
 
 [tasks.lint]
-run = ["go vet ./auth/... ./bloby/...", "pnpm lint", "pnpm typecheck"]
+run = [{ task = "go-lint" }, "pnpm lint", "pnpm typecheck"]
+
+[tasks.go-lint]
+run = "golangci-lint run ./auth/... ./bloby/..."
+
+[tasks.go-lint-fix]
+run = "golangci-lint run --fix ./auth/... ./bloby/..."
 
 [tasks.format]
 run = ["gofmt -w auth bloby", "pnpm format"]

@@ -224,7 +224,7 @@ func TestPasswordAuthentication(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := &principalStore{identity: &PasswordIdentity{Principal: Principal{ID: 42}, PasswordHash: hash}}
+	store := &principalStore{identity: &PasswordIdentity{ID: 42, PasswordHash: hash}}
 	service, err := NewService(store, sessions)
 	if err != nil {
 		t.Fatal(err)
