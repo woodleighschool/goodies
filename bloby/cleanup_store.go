@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 )
 
 const (
@@ -104,57 +102,6 @@ func pendingUploadMaxAge(transferTTL time.Duration) time.Duration {
 		return transferTTL + time.Hour
 	}
 	return minimumPendingUploadMaxAge
-}
-
-func (s *ObjectStore) claimExpiredPending(
-	ctx context.Context,
-	updatedBefore time.Time,
-	retryBefore time.Time,
-	limit int,
-) ([]Object, error) {
-	rows, err := s.pool.Query(ctx, `
-WITH candidates AS (
-    SELECT id
-    FROM storage_objects
-    WHERE available_at IS NULL
-      AND (
-          expired_at < $2
-          OR (expired_at IS NULL AND updated_at < $1)
-      )
-    ORDER BY (expired_at IS NULL), COALESCE(expired_at, updated_at), id
-    LIMIT $3
-    FOR UPDATE SKIP LOCKED
-)
-UPDATE storage_objects AS objects
-SET expired_at = now()
-FROM candidates
-WHERE objects.id = candidates.id
-  AND objects.available_at IS NULL
-RETURNING objects.id, objects.prefix, objects.filename, objects.content_type,
-          objects.size_bytes, objects.sha256, objects.available_at,
-          objects.multipart_upload_id, objects.created_at, objects.updated_at`,
-		updatedBefore,
-		retryBefore,
-		limit,
-	)
-	if err != nil {
-		return nil, err
-	}
-	return pgx.CollectRows(rows, pgx.RowToStructByName[Object])
-}
-
-func (s *ObjectStore) deleteExpiredPending(ctx context.Context, id int64) error {
-	tag, err := s.pool.Exec(ctx, `
-DELETE FROM storage_objects
-WHERE id = $1
-  AND expired_at IS NOT NULL`, id)
-	if err != nil {
-		return deleteConflict(err, "expired storage upload is still referenced")
-	}
-	if tag.RowsAffected() == 0 {
-		return ErrNotFound
-	}
-	return nil
 }
 
 func (s *Ingestor) deleteExpiredUpload(ctx context.Context, object *Object) error {
