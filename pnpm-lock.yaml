@@ -39,6 +39,18 @@ importers:
         specifier: ~6.0.3
         version: 6.0.3
 
+  packages/bloby-client:
+    devDependencies:
+      '@types/node':
+        specifier: ^26.4.0
+        version: 26.4.0
+      tsx:
+        specifier: ^4.21.0
+        version: 4.23.13
+      typescript:
+        specifier: ~6.0.3
+        version: 6.0.3
+
 packages:
 
   '@esbuild/aix-ppc64@0.28.2':

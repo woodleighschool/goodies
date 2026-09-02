@@ -21,6 +21,8 @@ jobs:
     outputs:
       authz-created: ${{ steps.release.outputs['packages/authz--release_created'] }}
       authz-tag: ${{ steps.release.outputs['packages/authz--tag_name'] }}
+      bloby-client-created: ${{ steps.release.outputs['packages/bloby-client--release_created'] }}
+      bloby-client-tag: ${{ steps.release.outputs['packages/bloby-client--tag_name'] }}
     steps:
       - name: Generate token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
@@ -61,3 +63,26 @@ jobs:
       - run: pnpm --filter @woodleighschool/authz build
       - run: npm publish
         working-directory: packages/authz
+
+  publish-bloby-client:
+    needs: release
+    if: ${{ needs.release.outputs.bloby-client-created == 'true' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release.outputs.bloby-client-tag }}
+          persist-credentials: false
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          experimental: true
+          install_args: node pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @woodleighschool/bloby-client typecheck
+      - run: pnpm --filter @woodleighschool/bloby-client test
+      - run: pnpm --filter @woodleighschool/bloby-client build
+      - run: npm publish
+        working-directory: packages/bloby-client

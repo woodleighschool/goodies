@@ -11,10 +11,10 @@ experimental = true
 lockfile = true
 
 [tasks.deps]
-run = ["go -C auth mod download", "pnpm install --frozen-lockfile"]
+run = ["go -C auth mod download", "go -C bloby mod download", "pnpm install --frozen-lockfile"]
 
 [tasks.test]
-run = ["go test -race -count=1 ./auth/...", "pnpm test"]
+run = ["go test -race -count=1 ./auth/... ./bloby/...", "pnpm test"]
 
 [tasks.check]
 run = [
@@ -28,26 +28,46 @@ run = [
 ]
 
 [tasks.test-module]
+run = [{ task = "test-module-auth" }, { task = "test-module-bloby" }]
+
+[tasks.test-module-auth]
 dir = "auth"
 env.GOWORK = "off"
 run = ["go vet ./...", "go test -race -count=1 ./...", "go mod tidy -diff"]
 
+[tasks.test-module-bloby]
+dir = "bloby"
+env.GOWORK = "off"
+run = ["go vet ./...", "go test -race -count=1 ./...", "go mod tidy -diff"]
+
+[tasks.test-postgres]
+env.BLOBY_TEST_DATABASE_URL = "postgres://goodies:goodies@127.0.0.1:5432/postgres?sslmode=disable"
+run = "go test -race -count=1 -tags=postgres ./bloby/..."
+
 [tasks.build]
-run = ["go build ./auth/...", "pnpm build"]
+run = ["go build ./auth/... ./bloby/...", "pnpm build"]
 
 [tasks.lint]
-run = ["go vet ./auth/...", "pnpm lint", "pnpm typecheck"]
+run = ["go vet ./auth/... ./bloby/...", "pnpm lint", "pnpm typecheck"]
 
 [tasks.format]
-run = ["gofmt -w auth", "pnpm format"]
+run = ["gofmt -w auth bloby", "pnpm format"]
 
 [tasks.fmt-check]
-run = ["test -z \"$(gofmt -l auth)\"", "pnpm format:check"]
+run = ["test -z \"$(gofmt -l auth bloby)\"", "pnpm format:check"]
 
 [tasks.workflow-lint]
 run = ["actionlint", "zizmor --min-severity medium --format plain .github/workflows"]
 
 [tasks.vulncheck]
+run = [{ task = "vulncheck-auth" }, { task = "vulncheck-bloby" }]
+
+[tasks.vulncheck-auth]
 dir = "auth"
+env.GOWORK = "off"
+run = "govulncheck ./..."
+
+[tasks.vulncheck-bloby]
+dir = "bloby"
 env.GOWORK = "off"
 run = "govulncheck ./..."

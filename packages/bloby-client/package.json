@@ -1,0 +1,39 @@
+{
+  "name": "@woodleighschool/bloby-client",
+  "version": "0.1.0",
+  "description": "Headless browser transfers for Bloby direct and multipart uploads.",
+  "homepage": "https://github.com/woodleighschool/goodies/tree/main/packages/bloby-client",
+  "bugs": "https://github.com/woodleighschool/goodies/issues",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/woodleighschool/goodies.git",
+    "directory": "packages/bloby-client"
+  },
+  "files": [
+    "dist",
+    "LICENSE"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "prepare": "pnpm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.0",
+    "tsx": "^4.21.0",
+    "typescript": "~6.0.3"
+  }
+}

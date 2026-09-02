@@ -15,6 +15,20 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: goodies
+          POSTGRES_PASSWORD: goodies
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U goodies -d postgres"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -24,6 +38,6 @@ jobs:
           experimental: true
       - run: mise run deps
       - run: mise run check
+      - run: mise run test-postgres
       - name: Check package contents
-        run: npm pack --dry-run
-        working-directory: packages/authz
+        run: pnpm --filter @woodleighschool/authz --filter @woodleighschool/bloby-client exec npm pack --dry-run
