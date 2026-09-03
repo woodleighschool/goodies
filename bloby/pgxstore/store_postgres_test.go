@@ -1,5 +1,3 @@
-//go:build postgres
-
 package pgxstore_test
 
 import (
@@ -10,12 +8,11 @@ import (
 	"time"
 
 	"github.com/woodleighschool/goodies/bloby"
-	"github.com/woodleighschool/goodies/bloby/internal/testdb"
 	"github.com/woodleighschool/goodies/bloby/pgxstore"
 )
 
 func TestRegistryLifecycleAndListing(t *testing.T) {
-	db, ctx := testdb.Open(t, pgxstore.PostgresSchema())
+	db, ctx := openTestDatabase(t)
 	objects := bloby.NewObjectStore(pgxstore.New(db), nil, slog.New(slog.DiscardHandler))
 
 	first, err := objects.CreatePending(ctx, "documents/reports", "first.pdf")
@@ -44,7 +41,7 @@ func TestRegistryLifecycleAndListing(t *testing.T) {
 }
 
 func TestRegistryDeletePreservesReferencedObject(t *testing.T) {
-	db, ctx := testdb.Open(t, pgxstore.PostgresSchema())
+	db, ctx := openTestDatabase(t)
 	objects := bloby.NewObjectStore(pgxstore.New(db), nil, slog.New(slog.DiscardHandler))
 	object, err := objects.CreatePending(ctx, "documents/reports", "report.pdf")
 	if err != nil {
@@ -68,7 +65,7 @@ func TestRegistryDeletePreservesReferencedObject(t *testing.T) {
 }
 
 func TestRegistryClaimsAbandonedPendingObjects(t *testing.T) {
-	db, ctx := testdb.Open(t, pgxstore.PostgresSchema())
+	db, ctx := openTestDatabase(t)
 	registry := pgxstore.New(db)
 	object, err := registry.CreatePending(ctx, "documents/reports", "report.pdf")
 	if err != nil {

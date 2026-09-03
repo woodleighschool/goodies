@@ -43,7 +43,7 @@ run = ["go vet ./...", "go test -race -count=1 ./...", "go mod tidy -diff"]
 
 [tasks.test-postgres]
 env.BLOBY_TEST_DATABASE_URL = "postgres://goodies:goodies@127.0.0.1:5432/postgres?sslmode=disable"
-run = "go test -race -count=1 -tags=postgres ./bloby/..."
+run = "go test -race -count=1 ./bloby/pgxstore"
 
 [tasks.build]
 run = ["go build ./auth/... ./bloby/...", "pnpm build"]
