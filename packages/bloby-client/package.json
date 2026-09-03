@@ -1,6 +1,6 @@
 {
   "name": "@woodleighschool/bloby-client",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Headless browser transfers for Bloby direct and multipart uploads.",
   "homepage": "https://github.com/woodleighschool/goodies/tree/main/packages/bloby-client",
   "bugs": "https://github.com/woodleighschool/goodies/issues",
