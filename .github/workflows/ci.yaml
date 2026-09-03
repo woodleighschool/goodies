@@ -2,6 +2,7 @@ name: CI
 
 on:
   pull_request:
+  merge_group:
   push:
     branches: [main]
 
@@ -14,6 +15,7 @@ concurrency:
 
 jobs:
   check:
+    name: Build Success
     runs-on: ubuntu-24.04
     services:
       postgres:
