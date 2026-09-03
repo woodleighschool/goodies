@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/alexedwards/scs/v2"
 )
@@ -100,22 +99,15 @@ func (s *Service) CurrentPrincipal(ctx context.Context) (*Principal, error) {
 	}
 	principal, err := s.principals.GetPrincipal(ctx, userID)
 	if errors.Is(err, ErrPrincipalNotFound) {
-		_ = s.sessions.Destroy(ctx)
+		if err := s.sessions.Destroy(ctx); err != nil {
+			return nil, fmt.Errorf("destroy invalid session: %w", err)
+		}
 		return nil, ErrNotAuthenticated
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get session principal: %w", err)
 	}
 	return principal, nil
-}
-
-// Authenticate resolves a principal from a bearer API key or browser session.
-// A syntactically valid bearer token takes precedence, even when rejected.
-func (s *Service) Authenticate(ctx context.Context, authHeader string) (*Principal, error) {
-	if token, ok := bearerToken(authHeader); ok {
-		return s.principalByAPIKey(ctx, token)
-	}
-	return s.CurrentPrincipal(ctx)
 }
 
 // StartSession renews the loaded browser session token and authenticates principalID.
@@ -133,16 +125,4 @@ func (s *Service) Logout(ctx context.Context) error {
 		return fmt.Errorf("destroy session: %w", err)
 	}
 	return nil
-}
-
-func bearerToken(authorization string) (string, bool) {
-	scheme, value, ok := strings.Cut(authorization, " ")
-	if !ok || !strings.EqualFold(scheme, "Bearer") {
-		return "", false
-	}
-	value = strings.TrimSpace(value)
-	if value == "" || strings.ContainsAny(value, " \t\r\n") {
-		return "", false
-	}
-	return value, true
 }

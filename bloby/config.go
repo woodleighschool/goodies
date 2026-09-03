@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 )
 
@@ -25,13 +26,15 @@ type Config struct {
 }
 
 // FileConfig holds the settings for server-hosted storage transfers.
+// Root must be a directory dedicated to Bloby.
 type FileConfig struct {
 	Root             string
 	BaseURL          string
 	CapabilityKeyHex string
 }
 
-// S3Config holds the settings for the S3 backend.
+// S3Config holds the settings for the S3 backend. Bucket must be dedicated to
+// Bloby; cleanup expires all abandoned multipart uploads in it.
 type S3Config struct {
 	Bucket    string
 	Region    string
@@ -41,8 +44,22 @@ type S3Config struct {
 	PathStyle bool
 }
 
-// New builds the configured backend.
-func New(ctx context.Context, cfg Config) (Backend, error) {
+// New returns the complete blob lifecycle for a registry and configured backend.
+func New(ctx context.Context, registry Registry, cfg Config, logger *slog.Logger) (*Service, error) {
+	if registry == nil {
+		return nil, errors.New("storage registry is required")
+	}
+	backend, err := newBackend(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Service{registry: registry, backend: backend, logger: logger, transferTTL: cfg.TransferTTL}, nil
+}
+
+func newBackend(ctx context.Context, cfg Config) (backend, error) {
 	if cfg.TransferTTL <= 0 {
 		return nil, errors.New("storage transfer TTL must be positive")
 	}

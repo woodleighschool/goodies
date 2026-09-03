@@ -38,7 +38,7 @@ func TestS3StoreSelectsUploadActionBySize(t *testing.T) {
 			if err != nil {
 				t.Fatalf("begin upload: %v", err)
 			}
-			_, multipart := action.(MultipartUploadAction)
+			multipart := action.Strategy == StrategyMultipart
 			if multipart != tt.wantMultipart {
 				t.Fatalf("multipart action = %t, want %t", multipart, tt.wantMultipart)
 			}
@@ -163,7 +163,7 @@ func TestS3StoreUsesConfiguredTransferTTL(t *testing.T) {
 		t.Fatalf("newS3Store: %v", err)
 	}
 
-	getURL, err := store.PresignGet(t.Context(), "munki/icons/7/icon.png", 0, GetOptions{})
+	getURL, err := store.PresignGet(t.Context(), "munki/icons/7/icon.png", 0, getOptions{})
 	if err != nil {
 		t.Fatalf("PresignGet: %v", err)
 	}
@@ -214,7 +214,7 @@ func TestS3StorePresignedGetRequiresNoHeaders(t *testing.T) {
 		t.Fatalf("newS3Store: %v", err)
 	}
 
-	rawURL, err := store.PresignGet(t.Context(), "munki/packages/42/Installer.pkg", 0, GetOptions{})
+	rawURL, err := store.PresignGet(t.Context(), "munki/packages/42/Installer.pkg", 0, getOptions{})
 	if err != nil {
 		t.Fatalf("PresignGet: %v", err)
 	}

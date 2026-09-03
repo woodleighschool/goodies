@@ -19,7 +19,7 @@ const testTransferTTL = 17 * time.Minute
 func TestFileStoreRejectsTraversal(t *testing.T) {
 	t.Parallel()
 	store := newTestFileStore(t)
-	if err := store.Put(context.Background(), "../escape", bytes.NewReader([]byte("x")), PutOptions{}); err == nil {
+	if err := store.Put(context.Background(), "../escape", bytes.NewReader([]byte("x")), putOptions{}); err == nil {
 		t.Fatal("Put with traversal key returned nil error, want rejection")
 	}
 }
@@ -32,7 +32,7 @@ func TestNewFileBackendRequiresExactCapabilityKey(t *testing.T) {
 		strings.Repeat("42", 33),
 		strings.Repeat("zz", 32),
 	} {
-		_, err := New(t.Context(), Config{
+		_, err := newBackend(t.Context(), Config{
 			Kind:        KindFile,
 			TransferTTL: time.Minute,
 			File: FileConfig{
@@ -49,7 +49,7 @@ func TestNewFileBackendRequiresExactCapabilityKey(t *testing.T) {
 
 func TestNewBackendRequiresPositiveTransferTTL(t *testing.T) {
 	t.Parallel()
-	_, err := New(t.Context(), Config{
+	_, err := newBackend(t.Context(), Config{
 		Kind: KindFile,
 		File: FileConfig{
 			Root:             t.TempDir(),
@@ -65,21 +65,25 @@ func TestNewBackendRequiresPositiveTransferTTL(t *testing.T) {
 func TestFileStoreDeliversObjectDirectly(t *testing.T) {
 	t.Parallel()
 	store := newTestFileStore(t)
-	sha256sum := strings.Repeat("a", 64)
+	sha256sum := hashString("icon bytes")
+	now := time.Now()
+	storageKey := "_objects/7/example/App.png"
 	object := Object{
 		ID:          7,
 		Prefix:      "munki/icons",
 		Filename:    "App.png",
 		ContentType: "image/png",
 		SHA256:      &sha256sum,
+		AvailableAt: &now,
+		StorageKey:  &storageKey,
 	}
-	if err := store.Put(t.Context(), object.Key(), strings.NewReader("icon bytes"), PutOptions{}); err != nil {
+	if err := store.Put(t.Context(), object.Key(), strings.NewReader("icon bytes"), putOptions{}); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/munki/icons/7/content", nil)
-	if err := NewDelivery(store).Deliver(rec, req, object, DeliveryOptions{
+	if err := (&Service{backend: store}).Deliver(rec, req, object, DeliveryOptions{
 		CacheControl: "private, max-age=86400",
 	}); err != nil {
 		t.Fatalf("Deliver: %v", err)
@@ -108,7 +112,7 @@ func TestFileStorePresignGetProducesBlobCapability(t *testing.T) {
 		context.Background(),
 		"munki/icons/7/App Icon.png",
 		0,
-		GetOptions{ContentType: "image/png"},
+		getOptions{ContentType: "image/png"},
 	)
 	if err != nil {
 		t.Fatalf("PresignGet: %v", err)
@@ -121,7 +125,7 @@ func TestFileStorePresignGetProducesBlobCapability(t *testing.T) {
 	if got := parsed.Scheme + "://" + parsed.Host + parsed.EscapedPath(); got != "https://woodstar.example/storage/munki/icons/7/App%20Icon.png" {
 		t.Fatalf("blob URL = %q, want path-bound storage URL", got)
 	}
-	claims, err := capability.Verify[BlobCapabilityClaims](
+	claims, err := capability.Verify[blobCapabilityClaims](
 		testCapabilityKey,
 		parsed.Query().Get("cap"),
 		capability.OpGet,
@@ -165,7 +169,7 @@ func TestFileStorePresignPutProducesUploadTarget(t *testing.T) {
 	if parsed.Query().Get("cap") == "" {
 		t.Fatalf("url = %q, want capability token", target.URL)
 	}
-	claims, err := capability.Verify[BlobCapabilityClaims](
+	claims, err := capability.Verify[blobCapabilityClaims](
 		testCapabilityKey,
 		parsed.Query().Get("cap"),
 		capability.OpPut,
@@ -185,7 +189,7 @@ func TestFileStorePresignPutProducesUploadTarget(t *testing.T) {
 
 func TestNewRejectsUnknownKind(t *testing.T) {
 	t.Parallel()
-	if _, err := New(context.Background(), Config{Kind: "bogus"}); err == nil {
+	if _, err := newBackend(context.Background(), Config{Kind: "bogus"}); err == nil {
 		t.Fatal("New with unknown kind returned nil error")
 	}
 }

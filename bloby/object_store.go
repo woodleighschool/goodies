@@ -13,8 +13,8 @@ import (
 	"unicode/utf8"
 )
 
-// Object is one stored or pending blob. Its byte key is derived from its
-// prefix, ID and filename.
+// Object is one pending or available blob. StorageKey identifies the immutable
+// bytes selected at publication; pending objects have no stored key.
 type Object struct {
 	ID                int64
 	Prefix            string
@@ -24,6 +24,7 @@ type Object struct {
 	SHA256            *string
 	AvailableAt       *time.Time
 	MultipartUploadID *string
+	StorageKey        *string
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
 }
@@ -38,7 +39,10 @@ type ListOptions struct {
 // atomic state transitions and return Bloby's sentinel errors.
 type Registry interface {
 	CreatePending(ctx context.Context, prefix, filename string) (*Object, error)
-	MarkAvailable(ctx context.Context, id, sizeBytes int64, contentType, sha256 string) (*Object, error)
+	// MarkAvailable publishes metadata once. Retries return the original available
+	// object unchanged; expired and missing objects return ErrNotFound.
+	MarkAvailable(ctx context.Context, id, sizeBytes int64, contentType, sha256, storageKey string) (*Object, error)
+	// RefreshPending only touches active pending rows; all others return ErrNotFound.
 	RefreshPending(ctx context.Context, id int64) (*Object, error)
 	RecordMultipartUploadID(ctx context.Context, id int64, uploadID string) (recorded string, created bool, err error)
 	ClearMultipartUploadID(ctx context.Context, id int64, uploadID string) error
@@ -50,14 +54,12 @@ type Registry interface {
 	DeleteExpiredPending(ctx context.Context, id int64) error
 }
 
-// Key builds a storage key from its parts: <prefix>/<id>/<filename>.
-func Key(prefix string, id int64, filename string) string {
-	return fmt.Sprintf("%s/%d/%s", prefix, id, filename)
-}
-
-// Key is the object's storage key.
+// Key returns the immutable stored key, or an empty string while pending.
 func (o Object) Key() string {
-	return Key(o.Prefix, o.ID, o.Filename)
+	if o.StorageKey == nil {
+		return ""
+	}
+	return *o.StorageKey
 }
 
 // Available reports whether the bytes have been finalized.
@@ -98,25 +100,24 @@ func (o Object) ETag() string {
 	return `"` + *o.SHA256 + `"`
 }
 
-// ObjectStore applies Bloby's model around a persistence registry.
-type ObjectStore struct {
-	registry Registry
-	backend  ObjectDeleter
-	logger   *slog.Logger
+// Service owns object ingestion, delivery, deletion, and abandoned-upload cleanup.
+// Applications authorize access to objects; only Service publishes their bytes.
+type Service struct {
+	registry    Registry
+	backend     backend
+	logger      *slog.Logger
+	transferTTL time.Duration
 }
 
-// ObjectDeleter removes stored bytes after a registry object is deleted.
-type ObjectDeleter interface {
-	Delete(ctx context.Context, key string) error
+const stagingPrefix = "_staging/"
+const candidatePrefix = "_objects/"
+
+func (o Object) stagingKey() string {
+	return fmt.Sprintf("%s%s/%d/%s", stagingPrefix, o.Prefix, o.ID, o.Filename)
 }
 
-// NewObjectStore returns an object store composed from a registry and byte backend.
-func NewObjectStore(registry Registry, backend ObjectDeleter, logger *slog.Logger) *ObjectStore {
-	return &ObjectStore{registry: registry, backend: backend, logger: logger}
-}
-
-// CreatePending reserves an object in the registry without classifying content.
-func (s *ObjectStore) CreatePending(ctx context.Context, prefix, filename string) (*Object, error) {
+// createPending reserves an object in the registry without classifying content.
+func (s *Service) createPending(ctx context.Context, prefix, filename string) (*Object, error) {
 	if !prefixPattern.MatchString(prefix) {
 		return nil, fmt.Errorf("%w: invalid storage prefix %q", ErrInvalidInput, prefix)
 	}
@@ -127,13 +128,14 @@ func (s *ObjectStore) CreatePending(ctx context.Context, prefix, filename string
 	return s.registry.CreatePending(ctx, prefix, filename)
 }
 
-// MarkAvailable records application-derived representation metadata for an object.
-func (s *ObjectStore) MarkAvailable(
+// markAvailable records metadata derived from sealed bytes.
+func (s *Service) markAvailable(
 	ctx context.Context,
 	id int64,
 	sizeBytes int64,
 	contentType string,
 	sha256sum string,
+	storageKey string,
 ) (*Object, error) {
 	contentType, err := normalizeContentType(contentType)
 	if err != nil {
@@ -142,40 +144,21 @@ func (s *ObjectStore) MarkAvailable(
 	if err := validateAvailableObjectMetadata(sizeBytes, sha256sum); err != nil {
 		return nil, err
 	}
-	return s.registry.MarkAvailable(ctx, id, sizeBytes, contentType, sha256sum)
-}
-
-// RefreshPending keeps an active upload outside the abandoned-upload window.
-func (s *ObjectStore) RefreshPending(ctx context.Context, id int64) (*Object, error) {
-	return s.registry.RefreshPending(ctx, id)
-}
-
-// RecordMultipartUploadID records a provider upload ID.
-func (s *ObjectStore) RecordMultipartUploadID(ctx context.Context, id int64, uploadID string) (string, bool, error) {
-	uploadID, err := normalizeMultipartUploadID(uploadID)
-	if err != nil {
-		return "", false, err
-	}
-	return s.registry.RecordMultipartUploadID(ctx, id, uploadID)
-}
-
-// ClearMultipartUploadID closes a recorded provider upload after assembly.
-func (s *ObjectStore) ClearMultipartUploadID(ctx context.Context, id int64, uploadID string) error {
-	return s.registry.ClearMultipartUploadID(ctx, id, uploadID)
+	return s.registry.MarkAvailable(ctx, id, sizeBytes, contentType, sha256sum, storageKey)
 }
 
 // GetByID returns one object.
-func (s *ObjectStore) GetByID(ctx context.Context, id int64) (*Object, error) {
+func (s *Service) GetByID(ctx context.Context, id int64) (*Object, error) {
 	return s.registry.GetByID(ctx, id)
 }
 
 // ListByIDs returns objects keyed by ID. Missing IDs are ignored.
-func (s *ObjectStore) ListByIDs(ctx context.Context, ids []int64) (map[int64]Object, error) {
+func (s *Service) ListByIDs(ctx context.Context, ids []int64) (map[int64]Object, error) {
 	return s.registry.ListByIDs(ctx, ids)
 }
 
 // ListByPrefix returns available objects under a prefix, newest first.
-func (s *ObjectStore) ListByPrefix(ctx context.Context, prefix string, options ListOptions) ([]Object, int, error) {
+func (s *Service) ListByPrefix(ctx context.Context, prefix string, options ListOptions) ([]Object, int, error) {
 	if options.Limit == 0 {
 		options.Limit = 50
 	}
@@ -185,20 +168,8 @@ func (s *ObjectStore) ListByPrefix(ctx context.Context, prefix string, options L
 	return s.registry.ListByPrefix(ctx, prefix, options)
 }
 
-// Delete removes one object from the registry and then best-effort removes its bytes.
-func (s *ObjectStore) Delete(ctx context.Context, id int64) error {
-	object, err := s.registry.Delete(ctx, id)
-	if err != nil {
-		return err
-	}
-	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), objectCleanupTimeout)
-	defer cancel()
-	s.deleteBytes(cleanupCtx, object)
-	return nil
-}
-
 // DeleteUnreferenced best-effort removes objects after their owning mutation commits.
-func (s *ObjectStore) DeleteUnreferenced(ctx context.Context, ids ...int64) {
+func (s *Service) DeleteUnreferenced(ctx context.Context, ids ...int64) {
 	if len(ids) == 0 {
 		return
 	}
@@ -216,26 +187,27 @@ func (s *ObjectStore) DeleteUnreferenced(ctx context.Context, ids ...int64) {
 	}
 }
 
-func (s *ObjectStore) deleteBytes(ctx context.Context, object *Object) {
-	if s.backend == nil {
-		return
-	}
-	if err := s.backend.Delete(ctx, object.Key()); err != nil {
-		s.logger.WarnContext(ctx, "storage object bytes could not be removed", "object_id", object.ID, "key", object.Key(), "err", err)
+func (s *Service) deleteBytes(ctx context.Context, object *Object) {
+	if err := s.removeBytes(ctx, object); err != nil {
+		s.logger.WarnContext(ctx, "storage object bytes could not be removed", "object_id", object.ID, "err", err)
 	}
 }
 
-func (s *ObjectStore) claimExpiredPending(
-	ctx context.Context,
-	updatedBefore time.Time,
-	retryBefore time.Time,
-	limit int,
-) ([]Object, error) {
-	return s.registry.ClaimExpiredPending(ctx, updatedBefore, retryBefore, limit)
-}
-
-func (s *ObjectStore) deleteExpiredPending(ctx context.Context, id int64) error {
-	return s.registry.DeleteExpiredPending(ctx, id)
+func (s *Service) removeBytes(ctx context.Context, object *Object) error {
+	var abortErr error
+	if object.MultipartUploadID != nil {
+		if backend, ok := s.backend.(multipartBackend); ok {
+			abortErr = backend.AbortMultipartUpload(ctx, object.stagingKey(), *object.MultipartUploadID)
+			if errors.Is(abortErr, ErrMultipartUploadNotFound) {
+				abortErr = nil
+			}
+		}
+	}
+	var finalErr error
+	if object.StorageKey != nil {
+		finalErr = s.backend.Delete(ctx, *object.StorageKey)
+	}
+	return errors.Join(abortErr, s.backend.Delete(ctx, object.stagingKey()), finalErr)
 }
 
 func normalizeContentType(value string) (string, error) {
@@ -250,20 +222,14 @@ func normalizeContentType(value string) (string, error) {
 	return value, nil
 }
 
-func normalizeMultipartUploadID(value string) (string, error) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return "", fmt.Errorf("%w: multipart upload ID is blank", ErrInvalidInput)
-	}
-	return value, nil
-}
-
 func validateAvailableObjectMetadata(sizeBytes int64, sha256sum string) error {
-	if sizeBytes < 0 || strings.TrimSpace(sha256sum) == "" {
+	if sizeBytes < 0 || !sha256Pattern.MatchString(sha256sum) {
 		return fmt.Errorf("%w: incomplete storage object metadata", ErrInvalidInput)
 	}
 	return nil
 }
+
+var sha256Pattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 var prefixPattern = regexp.MustCompile(`^[a-z0-9]+(/[a-z0-9]+)*$`)
 

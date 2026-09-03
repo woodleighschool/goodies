@@ -1,20 +1,17 @@
 package authn
 
 import (
-	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
-	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/woodleighschool/goodies/auth/internal/authtest"
 )
 
 func TestOIDCDiscoveryAndCallback(t *testing.T) {
@@ -45,57 +42,8 @@ func TestOIDCDiscoveryAndCallback(t *testing.T) {
 			if claim == "" {
 				claim = "email"
 			}
-			var issuer string
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
-				switch r.URL.Path {
-				case "/.well-known/openid-configuration":
-					_ = json.NewEncoder(w).Encode(map[string]any{
-						"issuer": issuer, "authorization_endpoint": issuer + "/authorize", "token_endpoint": issuer + "/token",
-						"jwks_uri": issuer + "/keys", "response_types_supported": []string{"code"},
-						"subject_types_supported": []string{"public"}, "id_token_signing_alg_values_supported": []string{"RS256"},
-					})
-				case "/keys":
-					_ = json.NewEncoder(w).Encode(map[string]any{"keys": []map[string]any{{"kty": "RSA", "kid": "test-key", "alg": "RS256", "use": "sig",
-						"n": base64.RawURLEncoding.EncodeToString(key.N.Bytes()), "e": base64.RawURLEncoding.EncodeToString(big.NewInt(int64(key.E)).Bytes()),
-					}}})
-				case "/token":
-					if err := r.ParseForm(); err != nil {
-						t.Error(err)
-						http.Error(w, "invalid form", 400)
-						return
-					}
-					if r.Form.Get("grant_type") != "authorization_code" || r.Form.Get("redirect_uri") != "https://app.example.invalid/callback" {
-						t.Errorf("token exchange form=%v", r.Form)
-					}
-					client, secret, ok := r.BasicAuth()
-					if !ok || client != "client-id" || secret != "synthetic-secret" {
-						t.Error("missing token client authentication")
-					}
-					claims := map[string]any{"iss": issuer, "sub": "synthetic-user", "aud": "client-id", "exp": time.Now().Add(time.Hour).Unix(), "iat": time.Now().Unix(), "nonce": r.Form.Get("code"), claim: " person@example.invalid "}
-					if tc.alter != nil {
-						tc.alter(claims)
-					}
-					payload, err := json.Marshal(claims)
-					if err != nil {
-						t.Error(err)
-						return
-					}
-					header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","kid":"test-key"}`))
-					unsigned := header + "." + base64.RawURLEncoding.EncodeToString(payload)
-					digest := sha256.Sum256([]byte(unsigned))
-					signature, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, digest[:])
-					if err != nil {
-						t.Error(err)
-						return
-					}
-					_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "synthetic-access-token", "token_type": "Bearer", "id_token": unsigned + "." + base64.RawURLEncoding.EncodeToString(signature)})
-				default:
-					http.NotFound(w, r)
-				}
-			}))
-			t.Cleanup(server.Close)
-			issuer = server.URL
+			server := authtest.OIDCProvider(t, key, claim, tc.alter)
+			issuer := server.URL
 			sessions, ctx := loadedSession(t)
 			store := &principalStore{principal: &Principal{ID: 42}, err: tc.storeErr}
 			service := &Service{principals: store, sessions: sessions}

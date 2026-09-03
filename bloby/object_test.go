@@ -21,33 +21,17 @@ func TestNormalizeContentType(t *testing.T) {
 	}
 }
 
-func TestNormalizeMultipartUploadID(t *testing.T) {
-	t.Parallel()
-
-	got, err := normalizeMultipartUploadID("  upload-1  ")
-	if err != nil {
-		t.Fatalf("normalize multipart upload ID: %v", err)
-	}
-	if got != "upload-1" {
-		t.Fatalf("multipart upload ID = %q, want upload-1", got)
-	}
-
-	if _, err := normalizeMultipartUploadID("  "); !errors.Is(err, ErrInvalidInput) {
-		t.Fatalf("normalize blank multipart upload ID error = %v, want ErrInvalidInput", err)
-	}
-}
-
 func TestValidateAvailableObjectMetadata(t *testing.T) {
 	t.Parallel()
 
-	if err := validateAvailableObjectMetadata(0, "sha256"); err != nil {
+	if err := validateAvailableObjectMetadata(0, hashString("example")); err != nil {
 		t.Fatalf("validate complete metadata: %v", err)
 	}
 	for name, input := range map[string]struct {
 		sizeBytes int64
 		sha256sum string
 	}{
-		"negative size": {sizeBytes: -1, sha256sum: "sha256"},
+		"negative size": {sizeBytes: -1, sha256sum: hashString("example")},
 		"blank hash":    {sizeBytes: 1, sha256sum: "  "},
 	} {
 		t.Run(name, func(t *testing.T) {

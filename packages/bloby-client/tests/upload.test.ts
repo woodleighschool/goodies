@@ -80,9 +80,11 @@ test("uploads a blob directly to the server-selected target", async () => {
 
   const result = await upload({
     strategy: "direct-put",
-    url: "https://uploads.example/object",
-    method: "PUT",
-    headers: { "X-Test": "signed" },
+    target: {
+      url: "https://uploads.example/object",
+      method: "PUT",
+      headers: { "X-Test": "signed" },
+    },
     blob,
     onProgress: (next) => progress.push(next.percent),
   });
@@ -119,6 +121,85 @@ test("re-signs a failed multipart part and returns its ETag", async () => {
   assert.deepEqual(signed, [1, 1]);
   assert.deepEqual(result, {
     strategy: "multipart",
-    parts: [{ partNumber: 1, etag: '"part-1"' }],
+    parts: [{ part_number: 1, etag: '"part-1"' }],
   });
+});
+
+test("completes multipart uploads with ordered parts and aggregate progress", async () => {
+  const partSize = 64 * 1024 * 1024;
+  const blob = new Blob([new Uint8Array(partSize), "end"]);
+  FakeXMLHttpRequest.responses = [
+    { status: 200, etag: '"first"' },
+    { status: 200, etag: '"last"' },
+  ];
+  const signed: number[] = [];
+  const progress: number[] = [];
+  const result = await upload({
+    strategy: "multipart",
+    multipart: {
+      signPart: async (partNumber) => {
+        signed.push(partNumber);
+        return { url: `https://uploads.invalid/${partNumber}`, method: "PUT" };
+      },
+    },
+    blob,
+    onProgress: ({ loaded }) => progress.push(loaded),
+  });
+
+  assert.deepEqual(signed, [1, 2]);
+  assert.deepEqual(
+    FakeXMLHttpRequest.requests.map(({ body }) => body?.size),
+    [partSize, 3],
+  );
+  assert.deepEqual(result, {
+    strategy: "multipart",
+    parts: [
+      { part_number: 1, etag: '"first"' },
+      { part_number: 2, etag: '"last"' },
+    ],
+  });
+  assert.equal(progress.at(-1), blob.size);
+  assert.ok(progress.every((loaded) => loaded <= blob.size));
+});
+
+test("does not transfer or sign parts after cancellation", async () => {
+  const signal = AbortSignal.abort();
+  const blob = new Blob(["cancelled"]);
+  await assert.rejects(
+    upload({
+      strategy: "direct-put",
+      target: { url: "https://uploads.invalid/object", method: "PUT" },
+      signal,
+      blob,
+    }),
+    /cancelled/,
+  );
+  await assert.rejects(
+    upload({
+      strategy: "multipart",
+      multipart: {
+        signPart: async () => {
+          throw new Error("must not sign");
+        },
+      },
+      signal,
+      blob,
+    }),
+    /cancelled/,
+  );
+  assert.equal(FakeXMLHttpRequest.requests.length, 0);
+});
+
+test("rejects multipart completion when the provider never supplies an ETag", async () => {
+  await assert.rejects(
+    upload({
+      strategy: "multipart",
+      multipart: {
+        signPart: async () => ({ url: "https://uploads.invalid/part", method: "PUT" }),
+      },
+      blob: new Blob(["part"]),
+    }),
+    /did not return an ETag/,
+  );
+  assert.equal(FakeXMLHttpRequest.requests.length, 2);
 });

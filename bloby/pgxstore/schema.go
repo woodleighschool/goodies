@@ -1,12 +1,23 @@
 package pgxstore
 
-import _ "embed"
+import (
+	"embed"
+	"io/fs"
+)
 
-//go:embed schema.sql
-var postgresSchema string
+// Version is the latest migration supplied by this package.
+const Version int64 = 2
 
-// PostgresSchema returns the schema required by Store. Applications remain
-// responsible for applying it through their own migration history.
-func PostgresSchema() string {
-	return postgresSchema
+//go:embed migrations/*.sql
+var migrationFiles embed.FS
+
+// Migrations returns ordered Goose SQL migrations for Bloby-owned tables.
+// Applications choose when and up to which version to apply them, using a
+// separate Goose version table for this migration history.
+func Migrations() fs.FS {
+	migrations, err := fs.Sub(migrationFiles, "migrations")
+	if err != nil {
+		panic(err)
+	}
+	return migrations
 }

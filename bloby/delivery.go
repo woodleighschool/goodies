@@ -2,6 +2,7 @@ package bloby
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"time"
 )
@@ -24,24 +25,18 @@ type DeliveryOptions struct {
 	CacheControl string
 }
 
-// Delivery applies backend-specific HTTP transfer policy to storage objects.
-type Delivery struct {
-	backend Backend
-}
-
-// NewDelivery returns the HTTP delivery boundary for backend.
-func NewDelivery(backend Backend) *Delivery {
-	return &Delivery{backend: backend}
-}
-
 // Deliver streams file-backed content and redirects S3-backed content to a
 // signed provider URL.
-func (d *Delivery) Deliver(
+func (d *Service) Deliver(
 	w http.ResponseWriter,
 	r *http.Request,
 	object Object,
 	opts DeliveryOptions,
 ) error {
+	if !object.Available() {
+		w.WriteHeader(http.StatusNotFound)
+		return ErrNotFound
+	}
 	if d.backend.deliveryMode() == deliveryRedirect {
 		url, err := d.DownloadURL(r.Context(), object, 0, opts)
 		if err != nil {
@@ -60,14 +55,29 @@ func (d *Delivery) Deliver(
 }
 
 // DownloadURL mints a backend-appropriate direct read URL for object.
-func (d *Delivery) DownloadURL(
+func (d *Service) DownloadURL(
 	ctx context.Context,
 	object Object,
 	ttl time.Duration,
 	opts DeliveryOptions,
 ) (string, error) {
-	return d.backend.PresignGet(ctx, object.Key(), ttl, GetOptions{
+	if !object.Available() {
+		return "", ErrNotFound
+	}
+	return d.backend.PresignGet(ctx, object.Key(), ttl, getOptions{
 		ContentType:  object.ContentType,
 		CacheControl: opts.CacheControl,
 	})
 }
+
+// Open reads the sealed bytes of an authorized available object.
+func (s *Service) Open(ctx context.Context, object Object) (io.ReadSeekCloser, error) {
+	if !object.Available() {
+		return nil, ErrNotFound
+	}
+	reader, _, err := s.backend.Open(ctx, object.Key())
+	return reader, err
+}
+
+// TransferOrigin returns the origin used by direct browser transfers.
+func (s *Service) TransferOrigin() string { return s.backend.TransferOrigin() }

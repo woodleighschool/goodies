@@ -1,16 +1,21 @@
-package authn
+package authhuma
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
+	"github.com/woodleighschool/goodies/auth/authn"
+	"github.com/woodleighschool/goodies/auth/browser"
 )
 
 func TestProtectedHumaAuthentication(t *testing.T) {
@@ -19,18 +24,19 @@ func TestProtectedHumaAuthentication(t *testing.T) {
 		authenticator *fakeAuthenticator
 		status        int
 	}{
-		{"authenticated", &fakeAuthenticator{principal: &Principal{ID: 42}}, http.StatusNoContent},
-		{"anonymous", &fakeAuthenticator{err: ErrNotAuthenticated}, http.StatusUnauthorized},
+		{"authenticated", &fakeAuthenticator{principal: &authn.Principal{ID: 42}}, http.StatusNoContent},
+		{"anonymous", &fakeAuthenticator{err: authn.ErrNotAuthenticated}, http.StatusUnauthorized},
 		{"unavailable", &fakeAuthenticator{err: errors.New("store unavailable")}, http.StatusInternalServerError},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			logs, logger := captureAuthLogs()
 			router := http.NewServeMux()
 			api := humago.New(router, huma.DefaultConfig("test", "test"))
 			group := huma.NewGroup(api)
-			group.UseMiddleware(RequireHumaAuth(api, tc.authenticator))
+			group.UseMiddleware(RequireAuth(api, tc.authenticator, logger))
 			group.UseModifier(ProtectedOperation(api))
 			huma.Register(group, huma.Operation{OperationID: "protected", Method: http.MethodGet, Path: "/protected", DefaultStatus: http.StatusNoContent}, func(ctx context.Context, _ *struct{}) (*struct{}, error) {
-				principal, err := RequirePrincipal(ctx)
+				principal, err := authn.RequirePrincipal(ctx)
 				if err != nil || principal.ID != 42 {
 					t.Fatalf("principal=%v error=%v", principal, err)
 				}
@@ -42,6 +48,16 @@ func TestProtectedHumaAuthentication(t *testing.T) {
 			router.ServeHTTP(recorder, req)
 			if recorder.Code != tc.status {
 				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+			if tc.status == http.StatusInternalServerError {
+				if !strings.Contains(logs.String(), tc.authenticator.err.Error()) || strings.Contains(recorder.Body.String(), tc.authenticator.err.Error()) {
+					t.Fatalf("unexpected-error boundary: body=%s logs=%s", recorder.Body.String(), logs.String())
+				}
+			} else if logs.Len() != 0 {
+				t.Fatalf("ordinary authentication logged an error: %s", logs.String())
+			}
+			if strings.Contains(logs.String(), "synthetic-key") {
+				t.Fatal("authentication logged the bearer credential")
 			}
 			if tc.authenticator.got != "Bearer synthetic-key" {
 				t.Fatalf("header=%q", tc.authenticator.got)
@@ -58,12 +74,12 @@ func TestProtectedHumaAuthentication(t *testing.T) {
 }
 
 type fakeAuthenticator struct {
-	principal *Principal
+	principal *authn.Principal
 	err       error
 	got       string
 }
 
-func (f *fakeAuthenticator) Authenticate(_ context.Context, authHeader string) (*Principal, error) {
+func (f *fakeAuthenticator) Authenticate(_ context.Context, authHeader string) (*authn.Principal, error) {
 	f.got = authHeader
 	if f.err != nil {
 		return nil, f.err
@@ -72,9 +88,9 @@ func (f *fakeAuthenticator) Authenticate(_ context.Context, authHeader string) (
 }
 
 func TestRequireHTTPAuthAttachesUser(t *testing.T) {
-	authenticator := &fakeAuthenticator{principal: &Principal{ID: 42}}
-	handler := RequireHTTPAuth(authenticator)(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		user, ok := PrincipalFromContext(req.Context())
+	authenticator := &fakeAuthenticator{principal: &authn.Principal{ID: 42}}
+	handler := browser.RequireHTTP(authenticator, slog.New(slog.DiscardHandler))(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		user, ok := authn.PrincipalFromContext(req.Context())
 		if !ok {
 			t.Fatal("missing user in context")
 		}
@@ -98,8 +114,8 @@ func TestRequireHTTPAuthAttachesUser(t *testing.T) {
 }
 
 func TestRequireHTTPAuthRejectsMissingCredentials(t *testing.T) {
-	authenticator := &fakeAuthenticator{err: ErrNotAuthenticated}
-	handler := RequireHTTPAuth(authenticator)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+	authenticator := &fakeAuthenticator{err: authn.ErrNotAuthenticated}
+	handler := browser.RequireHTTP(authenticator, slog.New(slog.DiscardHandler))(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("handler should not run")
 	}))
 
@@ -112,13 +128,17 @@ func TestRequireHTTPAuthRejectsMissingCredentials(t *testing.T) {
 }
 
 func TestRequireHTTPAuthTreatsLookupFailureAsServerError(t *testing.T) {
-	handler := RequireHTTPAuth(&fakeAuthenticator{err: errors.New("database unavailable")})(
+	logs, logger := captureAuthLogs()
+	handler := browser.RequireHTTP(&fakeAuthenticator{err: errors.New("database unavailable")}, logger)(
 		http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("handler ran") }),
 	)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/protected", nil))
 	if recorder.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d", recorder.Code)
+	}
+	if !strings.Contains(logs.String(), "database unavailable") || strings.Contains(recorder.Body.String(), "database unavailable") {
+		t.Fatalf("unexpected-error boundary: body=%s logs=%s", recorder.Body.String(), logs.String())
 	}
 }
 
@@ -129,16 +149,16 @@ func TestOptionalHumaAuthAllowsAnonymousAndRejectsBrokenLookup(t *testing.T) {
 		}
 	}
 
-	register := func(authenticator *fakeAuthenticator) http.Handler {
+	register := func(authenticator *fakeAuthenticator, logger *slog.Logger) http.Handler {
 		router := http.NewServeMux()
 		humaAPI := humago.New(router, huma.DefaultConfig("test", "test"))
 		group := huma.NewGroup(humaAPI)
-		group.UseMiddleware(OptionalHumaAuth(humaAPI, authenticator))
+		group.UseMiddleware(OptionalAuth(humaAPI, authenticator, logger))
 		huma.Register(group, huma.Operation{
 			OperationID: "optional-auth", Method: http.MethodGet, Path: "/session",
 		}, func(ctx context.Context, _ *struct{}) (*output, error) {
 			out := &output{}
-			if user, ok := PrincipalFromContext(ctx); ok {
+			if user, ok := authn.PrincipalFromContext(ctx); ok {
 				out.Body.UserID = user.ID
 			}
 			return out, nil
@@ -154,12 +174,12 @@ func TestOptionalHumaAuthAllowsAnonymousAndRejectsBrokenLookup(t *testing.T) {
 	}{
 		{
 			name:          "anonymous allowed",
-			authenticator: &fakeAuthenticator{err: ErrNotAuthenticated},
+			authenticator: &fakeAuthenticator{err: authn.ErrNotAuthenticated},
 			wantStatus:    http.StatusOK,
 		},
 		{
 			name:          "user attached",
-			authenticator: &fakeAuthenticator{principal: &Principal{ID: 7}},
+			authenticator: &fakeAuthenticator{principal: &authn.Principal{ID: 7}},
 			wantStatus:    http.StatusOK,
 			wantUserID:    7,
 		},
@@ -170,10 +190,14 @@ func TestOptionalHumaAuthAllowsAnonymousAndRejectsBrokenLookup(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			logs, logger := captureAuthLogs()
 			rec := httptest.NewRecorder()
-			register(tc.authenticator).ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/session", nil))
+			register(tc.authenticator, logger).ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/session", nil))
 			if rec.Code != tc.wantStatus {
 				t.Fatalf("status = %d, want %d; body = %q", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			if tc.wantStatus == http.StatusInternalServerError && (!strings.Contains(logs.String(), "db down") || strings.Contains(rec.Body.String(), "db down")) {
+				t.Fatalf("unexpected-error boundary: body=%s logs=%s", rec.Body.String(), logs.String())
 			}
 			if tc.wantStatus == http.StatusOK {
 				var body struct {
@@ -188,4 +212,9 @@ func TestOptionalHumaAuthAllowsAnonymousAndRejectsBrokenLookup(t *testing.T) {
 			}
 		})
 	}
+}
+
+func captureAuthLogs() (*bytes.Buffer, *slog.Logger) {
+	var logs bytes.Buffer
+	return &logs, slog.New(slog.NewJSONHandler(&logs, nil))
 }

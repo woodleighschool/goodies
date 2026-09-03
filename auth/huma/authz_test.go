@@ -1,16 +1,21 @@
-package authz
+package authhuma
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
 	"github.com/woodleighschool/goodies/auth/authn"
+	"github.com/woodleighschool/goodies/auth/authz"
+	"github.com/woodleighschool/goodies/auth/browser"
 )
 
 func TestAuthorizationHTTPBoundaries(t *testing.T) {
@@ -22,12 +27,14 @@ func TestAuthorizationHTTPBoundaries(t *testing.T) {
 	}{
 		{"anonymous", true, grantStore{}, http.StatusUnauthorized},
 		{"denied", false, grantStore{}, http.StatusForbidden},
-		{"allowed", false, grantStore{grants: []Grant{{"users", Edit}}}, http.StatusNoContent},
+		{"allowed", false, grantStore{grants: []authz.Grant{{Resource: "users", Access: authz.Edit}}}, http.StatusNoContent},
 		{"failed", false, grantStore{err: errors.New("store unavailable")}, http.StatusInternalServerError},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			s := newService(t, &tc.store)
-			raw := RequireHTTP(s, "users", View)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			s := newAuthorization(t, &tc.store)
+			var logs bytes.Buffer
+			logger := slog.New(slog.NewJSONHandler(&logs, nil))
+			raw := browser.RequirePermission(s, logger, "users", authz.View)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				p, err := authn.RequirePrincipal(r.Context())
 				if err != nil || p.ID != 42 {
 					t.Fatalf("principal=%v error=%v", p, err)
@@ -36,7 +43,7 @@ func TestAuthorizationHTTPBoundaries(t *testing.T) {
 			}))
 			router := http.NewServeMux()
 			api := humago.New(router, huma.DefaultConfig("test", "test"))
-			huma.Register(api, Require(api, s, "users", View, huma.Operation{OperationID: "users", Method: http.MethodGet, Path: "/users", DefaultStatus: http.StatusNoContent}), func(ctx context.Context, _ *struct{}) (*struct{}, error) {
+			huma.Register(api, Require(api, s, logger, "users", authz.View, huma.Operation{OperationID: "users", Method: http.MethodGet, Path: "/users", DefaultStatus: http.StatusNoContent}), func(ctx context.Context, _ *struct{}) (*struct{}, error) {
 				p, err := authn.RequirePrincipal(ctx)
 				if err != nil || p.ID != 42 {
 					t.Fatalf("principal=%v error=%v", p, err)
@@ -45,6 +52,7 @@ func TestAuthorizationHTTPBoundaries(t *testing.T) {
 			})
 			for name, handler := range map[string]http.Handler{"raw": raw, "huma": router} {
 				t.Run(name, func(t *testing.T) {
+					logs.Reset()
 					ctx := t.Context()
 					if !tc.anonymous {
 						ctx = authn.WithPrincipal(ctx, &authn.Principal{ID: 42})
@@ -53,6 +61,13 @@ func TestAuthorizationHTTPBoundaries(t *testing.T) {
 					handler.ServeHTTP(recorder, httptest.NewRequestWithContext(ctx, http.MethodGet, "/users", nil))
 					if recorder.Code != tc.status {
 						t.Fatalf("status=%d want=%d body=%s", recorder.Code, tc.status, recorder.Body.String())
+					}
+					if tc.status == http.StatusInternalServerError {
+						if !strings.Contains(logs.String(), tc.store.err.Error()) || strings.Contains(recorder.Body.String(), tc.store.err.Error()) {
+							t.Fatalf("unexpected-error boundary: body=%s logs=%s", recorder.Body.String(), logs.String())
+						}
+					} else if logs.Len() != 0 {
+						t.Fatalf("ordinary authorization logged an error: %s", logs.String())
 					}
 				})
 			}
@@ -63,8 +78,8 @@ func TestAuthorizationHTTPBoundaries(t *testing.T) {
 func TestOperationMetadataAndResourcePolicy(t *testing.T) {
 	router := http.NewServeMux()
 	api := humago.New(router, huma.DefaultConfig("test", "test"))
-	s := newService(t, &grantStore{})
-	group := ResourceAPI(api, s, "users")
+	s := newAuthorization(t, &grantStore{})
+	group := ResourceAPI(api, s, slog.New(slog.DiscardHandler), "users")
 	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
 		path := "/" + method
 		huma.Register(group, huma.Operation{OperationID: method, Method: method, Path: path}, func(context.Context, *struct{}) (*struct{}, error) { return &struct{}{}, nil })
@@ -81,9 +96,9 @@ func TestOperationMetadataAndResourcePolicy(t *testing.T) {
 		case http.MethodDelete:
 			op = api.OpenAPI().Paths[path].Delete
 		}
-		want := View
+		want := authz.View
 		if method != http.MethodGet && method != http.MethodHead {
-			want = Edit
+			want = authz.Edit
 		}
 		if !reflect.DeepEqual(op.Extensions["x-authz"], map[string]any{"resource": "users", "access": string(want)}) {
 			t.Fatalf("%s metadata=%v", method, op.Extensions)
@@ -92,7 +107,7 @@ func TestOperationMetadataAndResourcePolicy(t *testing.T) {
 			t.Fatalf("%s missing problem response", method)
 		}
 	}
-	group = RequireAPI(api, s, Requirement{"users", View}, Requirement{"reports", Edit})
+	group = RequireAPI(api, s, slog.New(slog.DiscardHandler), authz.Requirement{Resource: "users", Access: authz.View}, authz.Requirement{Resource: "reports", Access: authz.Edit})
 	huma.Register(group, huma.Operation{OperationID: "combined", Method: http.MethodGet, Path: "/combined", Extensions: map[string]any{"x-existing": "preserved"}}, func(context.Context, *struct{}) (*struct{}, error) { return &struct{}{}, nil })
 	op := api.OpenAPI().Paths["/combined"].Get
 	want := map[string]any{"all": []map[string]any{{"resource": "users", "access": "view"}, {"resource": "reports", "access": "edit"}}}
@@ -100,12 +115,28 @@ func TestOperationMetadataAndResourcePolicy(t *testing.T) {
 		t.Fatalf("combined metadata=%v", op.Extensions)
 	}
 	registry := api.OpenAPI().Components.Schemas
-	resourceSchema := registry.Schema(reflect.TypeFor[Resource](), false, "")
+	resourceSchema := registry.Schema(reflect.TypeFor[authz.Resource](), false, "")
 	if resourceSchema.Type != "string" || len(resourceSchema.Enum) != 0 {
 		t.Fatalf("resource leaked app catalogue: %+v", resourceSchema)
 	}
-	accessSchema := Access("").Schema(registry)
+	RegisterSchemas(registry)
+	accessSchema := registry.Schema(reflect.TypeFor[authz.Access](), false, "")
 	if !reflect.DeepEqual(accessSchema.Enum, []any{"none", "view", "edit"}) {
 		t.Fatalf("access enum=%v", accessSchema.Enum)
 	}
+}
+
+type grantStore struct {
+	grants []authz.Grant
+	err    error
+}
+
+func (s *grantStore) Grants(context.Context, int64) ([]authz.Grant, error) { return s.grants, s.err }
+func newAuthorization(t *testing.T, store *grantStore) *authz.Service {
+	t.Helper()
+	service, err := authz.NewService(store, []authz.Resource{"users", "reports", "settings"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return service
 }

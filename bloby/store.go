@@ -15,33 +15,29 @@ var ErrObjectNotFound = errors.New("storage object not found")
 // ErrMultipartUploadNotFound reports that a provider no longer has an upload ID.
 var ErrMultipartUploadNotFound = errors.New("storage multipart upload not found")
 
-// BlobStore reads and writes blobs by key. Backends: file, s3.
-type BlobStore interface {
-	Open(ctx context.Context, key string) (ObjectReader, ObjectInfo, error)
-	Put(ctx context.Context, key string, r io.Reader, opts PutOptions) error
+// blobStore reads and writes blobs by key. Backends: file, s3.
+type blobStore interface {
+	Open(ctx context.Context, key string) (io.ReadSeekCloser, objectInfo, error)
+	Put(ctx context.Context, key string, r io.Reader, opts putOptions) error
 	Delete(ctx context.Context, key string) error
 }
 
-// ObjectReader is a backend object stream that supports HTTP range reads.
-type ObjectReader interface {
-	io.Reader
-	io.Seeker
-	io.Closer
-}
-
-// Backend is a configured storage backend. All runtime backends can read/write
+// backend is a configured storage backend. All runtime backends can read/write
 // bytes and mint direct transfer URLs.
-type Backend interface {
-	BlobStore
-	Presigner
+type backend interface {
+	blobStore
+	presigner
 	PresignPut(ctx context.Context, key string, ttl time.Duration) (UploadTarget, error)
 	TransferOrigin() string
 	deliveryMode() deliveryMode
 	beginUpload(ctx context.Context, key string, sizeBytes int64) (UploadAction, error)
+	seal(ctx context.Context, stagingKey, key string) error
+	cleanupStaging(ctx context.Context, before time.Time) error
+	expiredCandidates(ctx context.Context, before time.Time) ([]string, error)
 }
 
-// MultipartBackend is the multipart transfer contract implemented by S3 storage.
-type MultipartBackend interface {
+// multipartBackend is the multipart transfer contract implemented by S3 storage.
+type multipartBackend interface {
 	CreateMultipartUpload(ctx context.Context, key string) (string, error)
 	PresignMultipartPart(
 		ctx context.Context,
@@ -53,38 +49,38 @@ type MultipartBackend interface {
 	AbortMultipartUpload(ctx context.Context, key, uploadID string) error
 }
 
-// Presigner mints direct read URLs.
-type Presigner interface {
-	PresignGet(ctx context.Context, key string, ttl time.Duration, opts GetOptions) (string, error)
+// presigner mints direct read URLs.
+type presigner interface {
+	PresignGet(ctx context.Context, key string, ttl time.Duration, opts getOptions) (string, error)
 }
 
-// ObjectInfo is backend metadata for stored bytes.
-type ObjectInfo struct {
+// objectInfo is backend metadata for stored bytes.
+type objectInfo struct {
 	Size int64
 }
 
-// PutOptions carries representation metadata to preserve with stored bytes.
-type PutOptions struct {
+// putOptions carries representation metadata to preserve with stored bytes.
+type putOptions struct {
 	ContentType string
 }
 
-// GetOptions carries optional hints for a presigned read.
-type GetOptions struct {
+// getOptions carries optional hints for a presigned read.
+type getOptions struct {
 	ContentType  string
 	CacheControl string
 }
 
 // UploadTarget identifies where and how to put an object's bytes.
 type UploadTarget struct {
-	URL     string
-	Method  string
-	Headers map[string]string
+	URL     string            `json:"url"`
+	Method  string            `json:"method" enum:"PUT"`
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // CompletedPart identifies one uploaded S3 multipart part.
 type CompletedPart struct {
-	PartNumber int32
-	ETag       string
+	PartNumber int32  `json:"part_number" minimum:"1" maximum:"10000"`
+	ETag       string `json:"etag" minLength:"1"`
 }
 
 func transferOrigin(rawURL string) (string, error) {

@@ -1,43 +1,37 @@
-package authz
+package authhuma
 
 import (
-	"context"
+	"log/slog"
 	"maps"
 	"net/http"
 
 	"github.com/danielgtaylor/huma/v2"
-
 	"github.com/woodleighschool/goodies/auth/authn"
+	"github.com/woodleighschool/goodies/auth/authz"
 	"github.com/woodleighschool/goodies/auth/internal/httpauth"
 )
 
-// Authorizer is the consumer contract shared by HTTP boundaries.
-type Authorizer interface {
-	Can(ctx context.Context, userID int64, resource Resource, required Access) (bool, error)
-	CanAll(ctx context.Context, userID int64, requirements ...Requirement) (bool, error)
-}
-
 // ResourceAPI applies the conventional view-for-reads, edit-for-writes policy
 // for one resource. Callers use [RequireAPI] for exceptions.
-func ResourceAPI(api huma.API, service Authorizer, resource Resource) *huma.Group {
+func ResourceAPI(api huma.API, service authz.Authorizer, logger *slog.Logger, resource authz.Resource) *huma.Group {
 	group := huma.NewGroup(api)
 	group.UseModifier(func(op *huma.Operation, next func(*huma.Operation)) {
-		required := View
+		required := authz.View
 		switch op.Method {
 		case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
-			required = Edit
+			required = authz.Edit
 		}
-		*op = Require(api, service, resource, required, *op)
+		*op = Require(api, service, logger, resource, required, *op)
 		next(op)
 	})
 	return group
 }
 
 // RequireAPI applies fixed requirements to every operation registered on the group.
-func RequireAPI(api huma.API, service Authorizer, requirements ...Requirement) *huma.Group {
+func RequireAPI(api huma.API, service authz.Authorizer, logger *slog.Logger, requirements ...authz.Requirement) *huma.Group {
 	group := huma.NewGroup(api)
 	group.UseModifier(func(op *huma.Operation, next func(*huma.Operation)) {
-		*op = RequireAll(api, service, *op, requirements...)
+		*op = RequireAll(api, service, logger, *op, requirements...)
 		next(op)
 	})
 	return group
@@ -46,29 +40,29 @@ func RequireAPI(api huma.API, service Authorizer, requirements ...Requirement) *
 // Require decorates one protected operation with its explicit authz requirement.
 func Require(
 	api huma.API,
-	service Authorizer,
-	resource Resource,
-	required Access,
+	service authz.Authorizer, logger *slog.Logger,
+	resource authz.Resource,
+	required authz.Access,
 	op huma.Operation,
 ) huma.Operation {
-	return require(api, service, op, Requirement{Resource: resource, Access: required})
+	return require(api, service, logger, op, authz.Requirement{Resource: resource, Access: required})
 }
 
 // RequireAll decorates one protected operation with every required permission.
 func RequireAll(
 	api huma.API,
-	service Authorizer,
+	service authz.Authorizer, logger *slog.Logger,
 	op huma.Operation,
-	requirements ...Requirement,
+	requirements ...authz.Requirement,
 ) huma.Operation {
-	return require(api, service, op, requirements...)
+	return require(api, service, logger, op, requirements...)
 }
 
 func require(
 	api huma.API,
-	service Authorizer,
+	service authz.Authorizer, logger *slog.Logger,
 	op huma.Operation,
-	requirements ...Requirement,
+	requirements ...authz.Requirement,
 ) huma.Operation {
 	op.Extensions = mergeExtensions(op.Extensions, map[string]any{
 		"x-authz": requirementExtension(requirements),
@@ -81,6 +75,7 @@ func require(
 		}
 		allowed, err := service.CanAll(ctx.Context(), principal.ID, requirements...)
 		if err != nil {
+			logger.ErrorContext(ctx.Context(), "authorization failed", "operation", ctx.Operation().OperationID, "err", err)
 			_ = huma.WriteErr(api, ctx, http.StatusInternalServerError, "authorization failed")
 			return
 		}
@@ -94,7 +89,7 @@ func require(
 	return op
 }
 
-func requirementExtension(requirements []Requirement) map[string]any {
+func requirementExtension(requirements []authz.Requirement) map[string]any {
 	values := make([]map[string]any, len(requirements))
 	for i, requirement := range requirements {
 		values[i] = map[string]any{
@@ -106,29 +101,6 @@ func requirementExtension(requirements []Requirement) map[string]any {
 		return values[0]
 	}
 	return map[string]any{"all": values}
-}
-
-// RequireHTTP enforces one authz requirement on a non-Huma HTTP route.
-func RequireHTTP(service Authorizer, resource Resource, required Access) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			principal, err := authn.RequirePrincipal(r.Context())
-			if err != nil {
-				http.Error(w, "not authenticated", http.StatusUnauthorized)
-				return
-			}
-			allowed, err := service.Can(r.Context(), principal.ID, resource, required)
-			if err != nil {
-				http.Error(w, "authorization failed", http.StatusInternalServerError)
-				return
-			}
-			if !allowed {
-				http.Error(w, "forbidden", http.StatusForbidden)
-				return
-			}
-			next.ServeHTTP(w, r)
-		})
-	}
 }
 
 func mergeExtensions(current map[string]any, extra map[string]any) map[string]any {

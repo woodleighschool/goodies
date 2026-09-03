@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -25,19 +26,19 @@ type s3Store struct {
 	presigner      *s3.PresignClient
 }
 
-var _ MultipartBackend = (*s3Store)(nil)
+var _ multipartBackend = (*s3Store)(nil)
 
 const s3MultipartThreshold = 100 * 1024 * 1024
 
 func (s *s3Store) beginUpload(ctx context.Context, key string, sizeBytes int64) (UploadAction, error) {
 	if sizeBytes > s3MultipartThreshold {
-		return MultipartUploadAction{}, nil
+		return UploadAction{Strategy: StrategyMultipart}, nil
 	}
 	target, err := s.PresignPut(ctx, key, 0)
 	if err != nil {
-		return nil, err
+		return UploadAction{}, err
 	}
-	return DirectUploadAction{Target: target}, nil
+	return UploadAction{Strategy: StrategyDirectPut, Target: &target}, nil
 }
 
 func newS3Store(ctx context.Context, cfg S3Config, transferTTL time.Duration) (*s3Store, error) {
@@ -111,10 +112,10 @@ func (s *s3Store) TransferOrigin() string {
 	return s.transferOrigin
 }
 
-func (s *s3Store) Open(ctx context.Context, key string) (ObjectReader, ObjectInfo, error) {
+func (s *s3Store) Open(ctx context.Context, key string) (io.ReadSeekCloser, objectInfo, error) {
 	output, err := s.getObject(ctx, key, 0)
 	if err != nil {
-		return nil, ObjectInfo{}, err
+		return nil, objectInfo{}, err
 	}
 	size := aws.ToInt64(output.ContentLength)
 	reader := &s3ObjectReader{
@@ -124,7 +125,7 @@ func (s *s3Store) Open(ctx context.Context, key string) (ObjectReader, ObjectInf
 		size:   size,
 		openAt: s.openObjectAt,
 	}
-	return reader, ObjectInfo{Size: size}, nil
+	return reader, objectInfo{Size: size}, nil
 }
 
 func (s *s3Store) getObject(ctx context.Context, key string, offset int64) (*s3.GetObjectOutput, error) {
@@ -228,7 +229,7 @@ func (r *s3ObjectReader) Close() error {
 
 // Put buffers the body to make it seekable for signing. The presigned upload
 // path is the norm for large objects; server-side Put is for modest writes.
-func (s *s3Store) Put(ctx context.Context, key string, r io.Reader, opts PutOptions) error {
+func (s *s3Store) Put(ctx context.Context, key string, r io.Reader, opts putOptions) error {
 	body, err := io.ReadAll(r)
 	if err != nil {
 		return fmt.Errorf("read body for %q: %w", key, err)
@@ -265,7 +266,7 @@ func (s *s3Store) PresignGet(
 	ctx context.Context,
 	key string,
 	ttl time.Duration,
-	opts GetOptions,
+	opts getOptions,
 ) (string, error) {
 	input := &s3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
@@ -426,4 +427,144 @@ func singleValueHeaders(headers http.Header) map[string]string {
 		}
 	}
 	return out
+}
+
+const (
+	s3CopyPartSize    int64 = 5 * 1024 * 1024 * 1024
+	s3MinimumCopySize int64 = 5 * 1024 * 1024
+)
+
+// seal copies a pinned staging representation to an attempt-specific key.
+// The registry selects one candidate only after its immutable bytes are inspected.
+func (s *s3Store) seal(ctx context.Context, stagingKey, key string) error {
+	source, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(stagingKey)})
+	if s3NotFound(err) {
+		return ErrObjectNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("head staging object %q: %w", stagingKey, err)
+	}
+	if aws.ToString(source.ETag) == "" {
+		return fmt.Errorf("seal %q: source ETag is missing", key)
+	}
+	if aws.ToInt64(source.ContentLength) < s3MinimumCopySize {
+		return s.sealSmall(ctx, stagingKey, key, source)
+	}
+	uploadID, err := s.CreateMultipartUpload(ctx, key)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), objectCleanupTimeout)
+		defer cancel()
+		_ = s.AbortMultipartUpload(cleanupCtx, key, uploadID)
+	}()
+
+	copySource := escapePath(s.bucket + "/" + stagingKey)
+	if version := aws.ToString(source.VersionId); version != "" {
+		copySource += "?versionId=" + url.QueryEscape(version)
+	}
+	size := aws.ToInt64(source.ContentLength)
+	parts := make([]types.CompletedPart, 0, (size+s3CopyPartSize-1)/s3CopyPartSize)
+	for offset := int64(0); offset < size; offset += s3CopyPartSize {
+		partNumber := int32(len(parts) + 1) //nolint:gosec // S3 object and part limits keep this below 10001.
+		input := &s3.UploadPartCopyInput{
+			Bucket: aws.String(s.bucket), Key: aws.String(key), UploadId: aws.String(uploadID), PartNumber: aws.Int32(partNumber),
+			CopySource: aws.String(copySource), CopySourceIfMatch: source.ETag,
+		}
+		// S3 permits byte-range copy only for sources larger than 5 MiB.
+		// A single part copies the whole object without a range.
+		if size > s3CopyPartSize {
+			input.CopySourceRange = aws.String(fmt.Sprintf("bytes=%d-%d", offset, min(offset+s3CopyPartSize, size)-1))
+		}
+		output, err := s.client.UploadPartCopy(ctx, input)
+		if err != nil {
+			return fmt.Errorf("copy part %d: %w", partNumber, err)
+		}
+		if output.CopyPartResult == nil || aws.ToString(output.CopyPartResult.ETag) == "" {
+			return fmt.Errorf("seal %q part %d: provider returned no ETag", key, partNumber)
+		}
+		parts = append(parts, types.CompletedPart{PartNumber: aws.Int32(partNumber), ETag: output.CopyPartResult.ETag})
+	}
+	_, err = s.client.CompleteMultipartUpload(ctx, &s3.CompleteMultipartUploadInput{
+		Bucket: aws.String(s.bucket), Key: aws.String(key), UploadId: aws.String(uploadID),
+		MultipartUpload: &types.CompletedMultipartUpload{Parts: parts},
+	})
+	return err
+}
+
+// S3-compatible providers may reject multipart copies below the minimum part
+// size. A bounded read pins their source ETag before writing a unique candidate.
+func (s *s3Store) sealSmall(ctx context.Context, stagingKey, key string, source *s3.HeadObjectOutput) error {
+	output, err := s.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.bucket), Key: aws.String(stagingKey), IfMatch: source.ETag, VersionId: source.VersionId,
+	})
+	if err != nil {
+		return err
+	}
+	body, readErr := io.ReadAll(io.LimitReader(output.Body, s3MinimumCopySize))
+	closeErr := output.Body.Close()
+	if err := errors.Join(readErr, closeErr); err != nil {
+		return fmt.Errorf("read staging object %q: %w", stagingKey, err)
+	}
+	if int64(len(body)) != aws.ToInt64(source.ContentLength) {
+		return fmt.Errorf("seal %q: staging size changed", key)
+	}
+	_, err = s.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(s.bucket), Key: aws.String(key), Body: bytes.NewReader(body),
+	})
+	return err
+}
+
+func (s *s3Store) cleanupStaging(ctx context.Context, before time.Time) error {
+	objects := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{
+		Bucket: aws.String(s.bucket), Prefix: aws.String(stagingPrefix),
+	})
+	for objects.HasMorePages() {
+		page, err := objects.NextPage(ctx)
+		if err != nil {
+			return fmt.Errorf("list staging objects: %w", err)
+		}
+		for _, object := range page.Contents {
+			if object.LastModified != nil && object.LastModified.Before(before) {
+				if err := s.Delete(ctx, aws.ToString(object.Key)); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	// A process can die while copying sealed bytes. Expire those server-owned
+	// multipart uploads as well as abandoned client multipart uploads.
+	uploads := s3.NewListMultipartUploadsPaginator(s.client, &s3.ListMultipartUploadsInput{Bucket: aws.String(s.bucket)})
+	for uploads.HasMorePages() {
+		page, err := uploads.NextPage(ctx)
+		if err != nil {
+			return fmt.Errorf("list incomplete uploads: %w", err)
+		}
+		for _, upload := range page.Uploads {
+			if upload.Initiated != nil && upload.Initiated.Before(before) {
+				if err := s.AbortMultipartUpload(ctx, aws.ToString(upload.Key), aws.ToString(upload.UploadId)); err != nil && !errors.Is(err, ErrMultipartUploadNotFound) {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func (s *s3Store) expiredCandidates(ctx context.Context, before time.Time) ([]string, error) {
+	objects := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{Bucket: aws.String(s.bucket), Prefix: aws.String(candidatePrefix)})
+	var keys []string
+	for objects.HasMorePages() {
+		page, err := objects.NextPage(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, object := range page.Contents {
+			if object.LastModified != nil && object.LastModified.Before(before) {
+				keys = append(keys, aws.ToString(object.Key))
+			}
+		}
+	}
+	return keys, nil
 }

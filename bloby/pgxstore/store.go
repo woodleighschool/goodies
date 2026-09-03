@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	objectColumnsSQL = `id, prefix, filename, content_type, size_bytes, sha256, available_at, multipart_upload_id, created_at, updated_at`
+	objectColumnsSQL = `id, prefix, filename, content_type, size_bytes, sha256, available_at, multipart_upload_id, storage_key, created_at, updated_at`
 	objectSelectSQL  = `SELECT ` + objectColumnsSQL + ` FROM storage_objects`
 )
 
@@ -40,15 +40,24 @@ func (s *Store) CreatePending(ctx context.Context, prefix, filename string) (*bl
 	return &object, nil
 }
 
-func (s *Store) MarkAvailable(ctx context.Context, id, sizeBytes int64, contentType, sha256sum string) (*bloby.Object, error) {
+func (s *Store) MarkAvailable(ctx context.Context, id, sizeBytes int64, contentType, sha256sum, storageKey string) (*bloby.Object, error) {
 	const sql = `UPDATE storage_objects
-SET size_bytes = @size_bytes, sha256 = @sha256, content_type = @content_type,
+SET size_bytes = @size_bytes, sha256 = @sha256, content_type = @content_type, storage_key = @storage_key,
     available_at = now(), updated_at = now()
-WHERE id = @id AND expired_at IS NULL
+WHERE id = @id AND available_at IS NULL AND expired_at IS NULL
 RETURNING ` + objectColumnsSQL
 	object, err := getOne[bloby.Object](ctx, s.pool, sql, pgx.NamedArgs{
-		"id": id, "size_bytes": &sizeBytes, "sha256": &sha256sum, "content_type": contentType,
+		"id": id, "size_bytes": &sizeBytes, "sha256": &sha256sum, "content_type": contentType, "storage_key": storageKey,
 	})
+	if errors.Is(err, bloby.ErrNotFound) {
+		current, getErr := s.GetByID(ctx, id)
+		if getErr != nil {
+			return nil, getErr
+		}
+		if current.Available() {
+			return current, nil
+		}
+	}
 	if err != nil {
 		return nil, mutationError(err)
 	}
@@ -167,7 +176,7 @@ UPDATE storage_objects AS objects SET expired_at = now()
 FROM candidates WHERE objects.id = candidates.id AND objects.available_at IS NULL
 RETURNING objects.id, objects.prefix, objects.filename, objects.content_type,
           objects.size_bytes, objects.sha256, objects.available_at,
-          objects.multipart_upload_id, objects.created_at, objects.updated_at`, updatedBefore, retryBefore, limit)
+          objects.multipart_upload_id, objects.storage_key, objects.created_at, objects.updated_at`, updatedBefore, retryBefore, limit)
 	if err != nil {
 		return nil, err
 	}

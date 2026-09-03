@@ -3,8 +3,8 @@ package bloby
 import (
 	"context"
 	"errors"
-	"fmt"
-	"log/slog"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -16,41 +16,10 @@ const (
 	minimumPendingUploadMaxAge = 24 * time.Hour
 )
 
-// UploadCleanup removes abandoned pending uploads independently of request lifetimes.
-type UploadCleanup struct {
-	stop context.CancelFunc
-	done <-chan struct{}
-}
-
-// Stop cancels cleanup and waits for the in-flight backend operation to exit.
-func (c *UploadCleanup) Stop() {
-	c.stop()
-	<-c.done
-}
-
-// StartUploadCleanup starts the storage-owned abandoned-upload cleanup loop.
-func StartUploadCleanup(
-	ctx context.Context,
-	ingestor *Ingestor,
-	transferTTL time.Duration,
-	logger *slog.Logger,
-) *UploadCleanup {
-	ctx, stop := context.WithCancel(ctx)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		uploadCleanupLoop(ctx, ingestor, pendingUploadMaxAge(transferTTL), logger)
-	}()
-	return &UploadCleanup{stop: stop, done: done}
-}
-
-func uploadCleanupLoop(
-	ctx context.Context,
-	ingestor *Ingestor,
-	maxAge time.Duration,
-	logger *slog.Logger,
-) {
-	sweepExpiredUploads(ctx, ingestor, maxAge, logger)
+// RunCleanup removes abandoned uploads until ctx is canceled. The caller owns
+// its goroutine and shutdown; all expiry policy and cleanup work belong here.
+func (s *Service) RunCleanup(ctx context.Context) {
+	s.sweepExpiredUploads(ctx)
 	ticker := time.NewTicker(uploadCleanupInterval)
 	defer ticker.Stop()
 	for {
@@ -58,43 +27,57 @@ func uploadCleanupLoop(
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			sweepExpiredUploads(ctx, ingestor, maxAge, logger)
+			s.sweepExpiredUploads(ctx)
 		}
 	}
 }
 
-func sweepExpiredUploads(
-	ctx context.Context,
-	ingestor *Ingestor,
-	maxAge time.Duration,
-	logger *slog.Logger,
-) {
+func (s *Service) sweepExpiredUploads(ctx context.Context) {
 	now := time.Now()
-	objects, err := ingestor.objects.claimExpiredPending(
-		ctx,
-		now.Add(-maxAge),
-		now.Add(-uploadCleanupRetryDelay),
-		uploadCleanupBatchSize,
-	)
-	if err != nil {
-		if !errors.Is(err, context.Canceled) {
-			logger.WarnContext(ctx, "abandoned upload cleanup failed", "operation", "claim", "err", err)
-		}
-		return
+	before := now.Add(-pendingUploadMaxAge(s.transferTTL))
+	objects, err := s.registry.ClaimExpiredPending(ctx, before, now.Add(-uploadCleanupRetryDelay), uploadCleanupBatchSize)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		s.logger.WarnContext(ctx, "abandoned upload cleanup failed", "operation", "claim", "err", err)
 	}
 	for i := range objects {
 		cleanupCtx, cancel := context.WithTimeout(ctx, objectCleanupTimeout)
-		err := ingestor.deleteExpiredUpload(cleanupCtx, &objects[i])
+		err := s.removeBytes(cleanupCtx, &objects[i])
+		if err == nil {
+			err = s.registry.DeleteExpiredPending(cleanupCtx, objects[i].ID)
+		}
 		cancel()
 		if err != nil && !errors.Is(err, context.Canceled) {
-			logger.WarnContext(
-				ctx,
-				"abandoned upload cleanup failed",
-				"object_id", objects[i].ID,
-				"err", err,
-			)
+			s.logger.WarnContext(ctx, "abandoned upload cleanup failed", "object_id", objects[i].ID, "err", err)
 		}
 	}
+	// Signed PUTs can finish after finalization or deletion. Sweep staging by
+	// age independently of registry rows so those late writes are also removed.
+	if err := s.backend.cleanupStaging(ctx, before); err != nil && !errors.Is(err, context.Canceled) {
+		s.logger.WarnContext(ctx, "abandoned upload cleanup failed", "operation", "staging", "err", err)
+	}
+	keys, err := s.backend.expiredCandidates(ctx, before)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		s.logger.WarnContext(ctx, "abandoned upload cleanup failed", "operation", "candidates", "err", err)
+	}
+	for _, key := range keys {
+		idText, _, ok := strings.Cut(strings.TrimPrefix(key, candidatePrefix), "/")
+		id, parseErr := strconv.ParseInt(idText, 10, 64)
+		if !ok || parseErr != nil {
+			continue
+		}
+		object, err := s.registry.GetByID(ctx, id)
+		if err == nil && (!object.Available() || object.Key() == key) {
+			continue
+		}
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			s.logger.WarnContext(ctx, "candidate cleanup could not resolve object", "object_id", id, "err", err)
+			continue
+		}
+		if err := s.backend.Delete(ctx, key); err != nil && !errors.Is(err, context.Canceled) {
+			s.logger.WarnContext(ctx, "candidate cleanup failed", "key", key, "err", err)
+		}
+	}
+
 }
 
 func pendingUploadMaxAge(transferTTL time.Duration) time.Duration {
@@ -102,21 +85,4 @@ func pendingUploadMaxAge(transferTTL time.Duration) time.Duration {
 		return transferTTL + time.Hour
 	}
 	return minimumPendingUploadMaxAge
-}
-
-func (s *Ingestor) deleteExpiredUpload(ctx context.Context, object *Object) error {
-	if object.MultipartUploadID != nil {
-		backend, err := s.multipartBackend()
-		if err != nil {
-			return err
-		}
-		if err := backend.AbortMultipartUpload(ctx, object.Key(), *object.MultipartUploadID); err != nil &&
-			!errors.Is(err, ErrMultipartUploadNotFound) {
-			return fmt.Errorf("abort multipart upload for %q: %w", object.Key(), err)
-		}
-	}
-	if err := s.backend.Delete(ctx, object.Key()); err != nil {
-		return fmt.Errorf("delete %q: %w", object.Key(), err)
-	}
-	return s.objects.deleteExpiredPending(ctx, object.ID)
 }

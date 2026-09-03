@@ -1,11 +1,7 @@
 // Package authz evaluates permissions against an application-owned resource catalogue.
 package authz
 
-import (
-	"errors"
-
-	"github.com/danielgtaylor/huma/v2"
-)
+import "errors"
 
 // Resource identifies an application capability protected by authorization.
 type Resource string
@@ -50,9 +46,4 @@ func (access Access) level() int {
 	default:
 		return -1
 	}
-}
-
-// Schema exposes Access as its ordered OpenAPI enum.
-func (Access) Schema(_ huma.Registry) *huma.Schema {
-	return &huma.Schema{Type: "string", Enum: []any{string(None), string(View), string(Edit)}}
 }

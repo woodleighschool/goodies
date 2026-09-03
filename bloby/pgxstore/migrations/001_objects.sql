@@ -1,4 +1,6 @@
-CREATE TABLE storage_objects (
+-- +goose Up
+
+CREATE TABLE IF NOT EXISTS storage_objects (
     id BIGSERIAL PRIMARY KEY,
     prefix TEXT NOT NULL,
     filename TEXT NOT NULL,
@@ -30,8 +32,8 @@ CREATE TABLE storage_objects (
     )
 );
 
-CREATE INDEX storage_objects_prefix_idx
+CREATE INDEX IF NOT EXISTS storage_objects_prefix_idx
     ON storage_objects (prefix);
-CREATE INDEX storage_objects_pending_expiry_idx
+CREATE INDEX IF NOT EXISTS storage_objects_pending_expiry_idx
     ON storage_objects (updated_at, id)
     WHERE available_at IS NULL;

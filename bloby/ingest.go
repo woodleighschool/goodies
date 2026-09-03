@@ -3,6 +3,7 @@ package bloby
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -16,119 +17,101 @@ import (
 // S3 limits each multipart upload to 10,000 parts.
 const s3MaximumMultipartParts = 10_000
 
-// Ingestor reserves, uploads, classifies, and finalizes storage objects.
-type Ingestor struct {
-	objects *ObjectStore
-	backend Backend
-}
-
-// UploadAction is the backend-selected action for uploading an object's bytes.
-type UploadAction interface {
-	isUploadAction()
-}
-
-// DirectUploadAction uploads the complete object to one target.
-type DirectUploadAction struct {
-	Target UploadTarget
-}
-
-func (DirectUploadAction) isUploadAction() {}
-
-// MultipartUploadAction uploads the object through the multipart API.
-type MultipartUploadAction struct{}
-
-func (MultipartUploadAction) isUploadAction() {}
-
-// NewIngestor returns an object ingestion service for backend.
-func NewIngestor(objects *ObjectStore, backend Backend) *Ingestor {
-	return &Ingestor{objects: objects, backend: backend}
-}
-
 // Begin reserves an object and selects the configured backend's upload action.
-func (s *Ingestor) Begin(
+func (s *Service) Begin(
 	ctx context.Context,
 	prefix string,
 	filename string,
 	sizeBytes int64,
 ) (*Object, UploadAction, error) {
 	if sizeBytes < 0 {
-		return nil, nil, fmt.Errorf("%w: size_bytes must not be negative", ErrInvalidInput)
+		return nil, UploadAction{}, fmt.Errorf("%w: size_bytes must not be negative", ErrInvalidInput)
 	}
-	object, err := s.objects.CreatePending(ctx, prefix, filename)
+	object, err := s.createPending(ctx, prefix, filename)
 	if err != nil {
-		return nil, nil, err
+		return nil, UploadAction{}, err
 	}
 
-	action, err := s.backend.beginUpload(ctx, object.Key(), sizeBytes)
+	action, err := s.backend.beginUpload(ctx, object.stagingKey(), sizeBytes)
 	if err != nil {
-		return nil, nil, errors.Join(err, s.Delete(ctx, object.ID, prefix))
+		return nil, UploadAction{}, errors.Join(err, s.Delete(ctx, object.ID, prefix))
 	}
-	if _, ok := action.(MultipartUploadAction); ok {
+	if action.Strategy == StrategyMultipart {
 		if err := s.createMultipart(ctx, object.ID, prefix); err != nil {
-			return nil, nil, errors.Join(err, s.Delete(ctx, object.ID, prefix))
+			return nil, UploadAction{}, errors.Join(err, s.Delete(ctx, object.ID, prefix))
 		}
 	}
 	return object, action, nil
 }
 
 // BeginDirect reserves an object and returns its direct upload target.
-func (s *Ingestor) BeginDirect(
+func (s *Service) BeginDirect(
 	ctx context.Context,
 	prefix string,
 	filename string,
-) (*Object, UploadTarget, error) {
-	object, err := s.objects.CreatePending(ctx, prefix, filename)
+) (*Object, UploadAction, error) {
+	object, err := s.createPending(ctx, prefix, filename)
 	if err != nil {
-		return nil, UploadTarget{}, err
+		return nil, UploadAction{}, err
 	}
-	target, err := s.backend.PresignPut(ctx, object.Key(), 0)
+	target, err := s.backend.PresignPut(ctx, object.stagingKey(), 0)
 	if err != nil {
-		return nil, UploadTarget{}, errors.Join(err, s.Delete(ctx, object.ID, prefix))
+		return nil, UploadAction{}, errors.Join(err, s.Delete(ctx, object.ID, prefix))
 	}
-	return object, target, nil
+	return object, UploadAction{Strategy: StrategyDirectPut, Target: &target}, nil
 }
 
 // Write ingests server-generated content directly into the registry.
-func (s *Ingestor) Write(
-	ctx context.Context,
-	prefix string,
-	filename string,
-	contentType string,
-	body []byte,
-) (*Object, error) {
-	object, err := s.objects.CreatePending(ctx, prefix, filename)
+func (s *Service) Write(ctx context.Context, prefix, filename, contentType string, body []byte) (*Object, error) {
+	contentType, err := normalizeContentType(contentType)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.backend.Put(
-		ctx,
-		object.Key(),
-		bytes.NewReader(body),
-		PutOptions{ContentType: contentType},
-	); err != nil {
-		return nil, errors.Join(err, s.objects.Delete(ctx, object.ID))
+	object, err := s.createPending(ctx, prefix, filename)
+	if err != nil {
+		return nil, err
+	}
+	key := candidateKey(object)
+	if err := s.backend.Put(ctx, key, bytes.NewReader(body), putOptions{ContentType: contentType}); err != nil {
+		s.deleteCandidate(ctx, key)
+		s.DeleteUnreferenced(ctx, object.ID)
+		return nil, err
 	}
 	hash := sha256.Sum256(body)
-	available, err := s.objects.MarkAvailable(
-		ctx,
-		object.ID,
-		int64(len(body)),
-		contentType,
-		hex.EncodeToString(hash[:]),
-	)
+	available, err := s.markAvailable(ctx, object.ID, int64(len(body)), contentType, hex.EncodeToString(hash[:]), key)
 	if err != nil {
-		return nil, errors.Join(err, s.objects.Delete(ctx, object.ID))
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), objectCleanupTimeout)
+		defer cancel()
+		deleted, deleteErr := s.registry.Delete(cleanupCtx, object.ID)
+		switch {
+		case deleteErr == nil:
+			s.deleteBytes(cleanupCtx, deleted)
+			if deleted.Key() != key {
+				s.deleteCandidate(cleanupCtx, key)
+			}
+		case errors.Is(deleteErr, ErrNotFound):
+			s.deleteCandidate(cleanupCtx, key)
+		default:
+			// A publish may have committed before its response was lost. Keep its
+			// bytes unless the registry confirms that the object was removed.
+			s.logger.WarnContext(cleanupCtx, "failed write cleanup could not remove object", "object_id", object.ID, "err", deleteErr)
+		}
+		return nil, err
 	}
 	return available, nil
 }
 
+func candidateKey(object *Object) string {
+	return fmt.Sprintf("%s%d/%s/%s", candidatePrefix, object.ID, rand.Text(), object.Filename)
+}
+
 // Finalize classifies and hashes uploaded bytes, then marks the object available.
-func (s *Ingestor) Finalize(
+func (s *Service) Finalize(
 	ctx context.Context,
 	objectID int64,
 	prefix string,
 ) (*Object, error) {
-	object, err := s.objects.GetByID(ctx, objectID)
+	object, err := s.registry.GetByID(ctx, objectID)
 	if err != nil {
 		return nil, err
 	}
@@ -138,27 +121,70 @@ func (s *Ingestor) Finalize(
 	if object.Available() {
 		return object, nil
 	}
-	object, err = s.objects.RefreshPending(ctx, object.ID)
+	object, err = s.registry.RefreshPending(ctx, object.ID)
+	if errors.Is(err, ErrNotFound) {
+		current, getErr := s.registry.GetByID(ctx, objectID)
+		if getErr == nil && current.Available() {
+			return current, nil
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
 	if object.MultipartUploadID != nil {
 		return nil, fmt.Errorf("%w: multipart upload must be completed before finalization", ErrInvalidInput)
 	}
-	metadata, err := s.inspect(ctx, object.Key())
-	if err != nil {
+	key := candidateKey(object)
+	if err := s.backend.seal(ctx, object.stagingKey(), key); err != nil {
+		s.deleteCandidate(ctx, key)
+		if current, getErr := s.registry.GetByID(ctx, object.ID); getErr == nil && current.Available() {
+			return current, nil
+		}
 		return nil, err
 	}
-	return s.objects.MarkAvailable(
+	metadata, err := s.inspect(ctx, key)
+	if err != nil {
+		s.deleteCandidate(ctx, key)
+		if current, getErr := s.registry.GetByID(ctx, object.ID); getErr == nil && current.Available() {
+			return current, nil
+		}
+		return nil, err
+	}
+	available, err := s.markAvailable(
 		ctx,
 		object.ID,
 		metadata.sizeBytes,
 		metadata.contentType,
 		metadata.sha256,
+		key,
 	)
+	if errors.Is(err, ErrNotFound) || (err == nil && available.Key() != key) {
+		// A deletion, expiry, or another finalizer won the registry transition.
+		s.deleteCandidate(ctx, key)
+	}
+	if err == nil {
+		s.deleteStaging(ctx, object)
+	}
+	// Other registry errors can be ambiguous commits. Keep the candidate until
+	// a retry reads the winning key or age-based cleanup resolves ownership.
+	return available, err
 }
 
-func (s *Ingestor) createMultipart(
+func (s *Service) deleteCandidate(ctx context.Context, key string) {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), objectCleanupTimeout)
+	defer cancel()
+	if err := s.backend.Delete(cleanupCtx, key); err != nil {
+		s.logger.WarnContext(cleanupCtx, "storage candidate could not be removed", "key", key, "err", err)
+	}
+}
+
+func (s *Service) deleteStaging(ctx context.Context, object *Object) {
+	if err := s.backend.Delete(ctx, object.stagingKey()); err != nil {
+		s.logger.WarnContext(ctx, "storage staging bytes could not be removed", "object_id", object.ID, "err", err)
+	}
+}
+
+func (s *Service) createMultipart(
 	ctx context.Context,
 	objectID int64,
 	prefix string,
@@ -170,7 +196,7 @@ func (s *Ingestor) createMultipart(
 	if object.MultipartUploadID != nil {
 		return nil
 	}
-	objectExists, err := s.objectExists(ctx, object.Key())
+	objectExists, err := s.objectExists(ctx, object.stagingKey())
 	if err != nil {
 		return err
 	}
@@ -180,16 +206,16 @@ func (s *Ingestor) createMultipart(
 			ErrInvalidInput,
 		)
 	}
-	uploadID, err := backend.CreateMultipartUpload(ctx, object.Key())
+	uploadID, err := backend.CreateMultipartUpload(ctx, object.stagingKey())
 	if err != nil {
 		return err
 	}
-	_, created, err := s.objects.RecordMultipartUploadID(ctx, object.ID, uploadID)
+	_, created, err := s.registry.RecordMultipartUploadID(ctx, object.ID, uploadID)
 	if err != nil {
-		return errors.Join(err, backend.AbortMultipartUpload(ctx, object.Key(), uploadID))
+		return errors.Join(err, backend.AbortMultipartUpload(ctx, object.stagingKey(), uploadID))
 	}
 	if !created {
-		abortErr := backend.AbortMultipartUpload(ctx, object.Key(), uploadID)
+		abortErr := backend.AbortMultipartUpload(ctx, object.stagingKey(), uploadID)
 		if abortErr != nil && !errors.Is(abortErr, ErrMultipartUploadNotFound) {
 			return abortErr
 		}
@@ -198,7 +224,7 @@ func (s *Ingestor) createMultipart(
 }
 
 // PresignMultipartPart returns an S3 PUT target for a recorded multipart upload.
-func (s *Ingestor) PresignMultipartPart(
+func (s *Service) PresignMultipartPart(
 	ctx context.Context,
 	objectID int64,
 	prefix string,
@@ -214,11 +240,11 @@ func (s *Ingestor) PresignMultipartPart(
 	if object.MultipartUploadID == nil {
 		return UploadTarget{}, fmt.Errorf("%w: multipart upload has not been created", ErrInvalidInput)
 	}
-	return backend.PresignMultipartPart(ctx, object.Key(), *object.MultipartUploadID, partNumber, 0)
+	return backend.PresignMultipartPart(ctx, object.stagingKey(), *object.MultipartUploadID, partNumber, 0)
 }
 
 // CompleteMultipart assembles uploaded parts at the object's storage key.
-func (s *Ingestor) CompleteMultipart(
+func (s *Service) CompleteMultipart(
 	ctx context.Context,
 	objectID int64,
 	prefix string,
@@ -227,12 +253,22 @@ func (s *Ingestor) CompleteMultipart(
 	if err := validateCompletedParts(parts); err != nil {
 		return err
 	}
+	current, err := s.registry.GetByID(ctx, objectID)
+	if err != nil {
+		return err
+	}
+	if current.Prefix != prefix {
+		return fmt.Errorf("%w: object has the wrong storage prefix", ErrInvalidInput)
+	}
+	if current.Available() {
+		return nil
+	}
 	object, backend, err := s.multipartObject(ctx, objectID, prefix)
 	if err != nil {
 		return err
 	}
 	if object.MultipartUploadID == nil {
-		exists, existsErr := s.objectExists(ctx, object.Key())
+		exists, existsErr := s.objectExists(ctx, object.stagingKey())
 		if existsErr != nil {
 			return existsErr
 		}
@@ -242,9 +278,9 @@ func (s *Ingestor) CompleteMultipart(
 		return fmt.Errorf("%w: multipart upload has not been created", ErrInvalidInput)
 	}
 	uploadID := *object.MultipartUploadID
-	err = backend.CompleteMultipartUpload(ctx, object.Key(), uploadID, parts)
+	err = backend.CompleteMultipartUpload(ctx, object.stagingKey(), uploadID, parts)
 	if errors.Is(err, ErrMultipartUploadNotFound) {
-		exists, existsErr := s.objectExists(ctx, object.Key())
+		exists, existsErr := s.objectExists(ctx, object.stagingKey())
 		if existsErr != nil {
 			return existsErr
 		}
@@ -254,52 +290,39 @@ func (s *Ingestor) CompleteMultipart(
 	} else if err != nil {
 		return err
 	}
-	return s.objects.ClearMultipartUploadID(ctx, object.ID, uploadID)
+	return s.registry.ClearMultipartUploadID(ctx, object.ID, uploadID)
 }
 
-// Delete removes an object under prefix and aborts its multipart upload, if any.
-func (s *Ingestor) Delete(ctx context.Context, objectID int64, prefix string) error {
-	object, err := s.objects.GetByID(ctx, objectID)
+// Delete removes an authorized object under prefix and then removes its bytes.
+// Registry reference constraints are checked before touching stored content.
+func (s *Service) Delete(ctx context.Context, objectID int64, prefix string) error {
+	object, err := s.registry.GetByID(ctx, objectID)
 	if err != nil {
 		return err
 	}
 	if object.Prefix != prefix {
 		return fmt.Errorf("%w: object has the wrong storage prefix", ErrInvalidInput)
 	}
-	if !object.Available() {
-		object, err = s.objects.RefreshPending(ctx, object.ID)
-		if err != nil {
-			return err
-		}
+	object, err = s.registry.Delete(ctx, object.ID)
+	if err != nil {
+		return err
 	}
-	if object.MultipartUploadID != nil {
-		backend, err := s.multipartBackend()
-		if err != nil {
-			return err
-		}
-		if err := backend.AbortMultipartUpload(ctx, object.Key(), *object.MultipartUploadID); err != nil &&
-			!errors.Is(err, ErrMultipartUploadNotFound) {
-			return err
-		}
-	}
-	if !object.Available() {
-		if err := s.backend.Delete(ctx, object.Key()); err != nil {
-			return fmt.Errorf("delete %q: %w", object.Key(), err)
-		}
-	}
-	return s.objects.Delete(ctx, object.ID)
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), objectCleanupTimeout)
+	defer cancel()
+	s.deleteBytes(cleanupCtx, object)
+	return nil
 }
 
-func (s *Ingestor) multipartObject(
+func (s *Service) multipartObject(
 	ctx context.Context,
 	objectID int64,
 	prefix string,
-) (*Object, MultipartBackend, error) {
+) (*Object, multipartBackend, error) {
 	backend, err := s.multipartBackend()
 	if err != nil {
 		return nil, nil, err
 	}
-	object, err := s.objects.GetByID(ctx, objectID)
+	object, err := s.registry.GetByID(ctx, objectID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -309,22 +332,22 @@ func (s *Ingestor) multipartObject(
 	if object.Available() {
 		return nil, nil, fmt.Errorf("%w: storage object is already finalized", ErrInvalidInput)
 	}
-	object, err = s.objects.RefreshPending(ctx, object.ID)
+	object, err = s.registry.RefreshPending(ctx, object.ID)
 	if err != nil {
 		return nil, nil, err
 	}
 	return object, backend, nil
 }
 
-func (s *Ingestor) multipartBackend() (MultipartBackend, error) {
-	backend, ok := s.backend.(MultipartBackend)
+func (s *Service) multipartBackend() (multipartBackend, error) {
+	backend, ok := s.backend.(multipartBackend)
 	if !ok {
 		return nil, fmt.Errorf("%w: multipart uploads require S3 storage", ErrInvalidInput)
 	}
 	return backend, nil
 }
 
-func (s *Ingestor) objectExists(ctx context.Context, key string) (bool, error) {
+func (s *Service) objectExists(ctx context.Context, key string) (bool, error) {
 	reader, _, err := s.backend.Open(ctx, key)
 	if errors.Is(err, ErrObjectNotFound) {
 		return false, nil
@@ -364,7 +387,7 @@ type objectMetadata struct {
 	sha256      string
 }
 
-func (s *Ingestor) inspect(ctx context.Context, key string) (objectMetadata, error) {
+func (s *Service) inspect(ctx context.Context, key string) (objectMetadata, error) {
 	reader, info, err := s.backend.Open(ctx, key)
 	if err != nil {
 		return objectMetadata{}, err

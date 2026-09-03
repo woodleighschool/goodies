@@ -2,10 +2,11 @@
 package httpauth
 
 import (
-	"github.com/danielgtaylor/huma/v2"
 	"net/http"
 	"reflect"
 	"strconv"
+
+	"github.com/danielgtaylor/huma/v2"
 )
 
 // DeclareErrorResponse adds Huma's standard problem response for status.

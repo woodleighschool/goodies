@@ -147,33 +147,28 @@ func TestCurrentPrincipalDistinguishesMissingIdentityFromStoreFailure(t *testing
 	}
 }
 
-func TestAuthenticateBearerPrecedence(t *testing.T) {
+func TestMissingPrincipalPreservesSessionRevocationFailure(t *testing.T) {
 	sessions, ctx := loadedSession(t)
-	sessions.Put(ctx, sessionUserIDKey, int64(42))
-	store := &principalStore{principal: &Principal{ID: 42}, key: "valid-key"}
-	service := &Service{principals: store, sessions: sessions}
-	for _, tc := range []struct {
-		header  string
-		wantErr bool
-	}{
-		{"", false}, {"Basic ignored", false}, {"Bearer", false}, {"Bearer ", false},
-		{"Bearer two tokens", false}, {"Bearer\tvalid-key", false},
-		{"bEaReR   valid-key  ", false}, {"Bearer invalid-key", true},
-	} {
-		t.Run(tc.header, func(t *testing.T) {
-			principal, err := service.Authenticate(ctx, tc.header)
-			if tc.wantErr {
-				if !errors.Is(err, ErrNotAuthenticated) || principal != nil {
-					t.Fatalf("principal=%v error=%v", principal, err)
-				}
-				return
-			}
-			if err != nil || principal.ID != 42 {
-				t.Fatalf("principal=%v error=%v", principal, err)
-			}
-		})
+	service := &Service{principals: &principalStore{err: ErrPrincipalNotFound}, sessions: sessions}
+	if err := service.StartSession(ctx, 42); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := sessions.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	broken := errors.New("session store unavailable")
+	sessions.Store = failingDeleteStore{Store: sessions.Store, err: broken}
+	if _, err := service.CurrentPrincipal(ctx); !errors.Is(err, broken) {
+		t.Fatalf("session revocation error = %v, want %v", err, broken)
 	}
 }
+
+type failingDeleteStore struct {
+	scs.Store
+	err error
+}
+
+func (s failingDeleteStore) Delete(string) error { return s.err }
 
 func TestAPIKeyRotationAndRevocation(t *testing.T) {
 	store := &principalStore{principal: &Principal{ID: 42}}
@@ -192,17 +187,17 @@ func TestAPIKeyRotationAndRevocation(t *testing.T) {
 	if old == store.key {
 		t.Fatal("rotation retained old key")
 	}
-	if _, err := service.Authenticate(t.Context(), "Bearer "+old); !errors.Is(err, ErrNotAuthenticated) {
+	if _, err := service.AuthenticateAPIKey(t.Context(), old); !errors.Is(err, ErrNotAuthenticated) {
 		t.Fatalf("old key: %v", err)
 	}
-	if p, err := service.Authenticate(t.Context(), "Bearer "+store.key); err != nil || p.ID != 42 {
+	if p, err := service.AuthenticateAPIKey(t.Context(), store.key); err != nil || p.ID != 42 {
 		t.Fatalf("new key: %v %v", p, err)
 	}
 	key := store.key
 	if err := service.RevokeAPIKey(t.Context(), 42); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.Authenticate(t.Context(), "Bearer "+key); !errors.Is(err, ErrNotAuthenticated) {
+	if _, err := service.AuthenticateAPIKey(t.Context(), key); !errors.Is(err, ErrNotAuthenticated) {
 		t.Fatalf("revoked key: %v", err)
 	}
 	broken := errors.New("store unavailable")
@@ -212,7 +207,7 @@ func TestAPIKeyRotationAndRevocation(t *testing.T) {
 			t.Fatalf("store error: %v", err)
 		}
 	}
-	if _, err := service.Authenticate(t.Context(), "Bearer key"); !errors.Is(err, broken) {
+	if _, err := service.AuthenticateAPIKey(t.Context(), "key"); !errors.Is(err, broken) {
 		t.Fatalf("lookup error: %v", err)
 	}
 }

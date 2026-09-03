@@ -16,12 +16,12 @@ type transferHandlerProvider interface {
 
 // TransferHandler returns the server-hosted transfer endpoint for backend.
 // S3 transfers use provider-signed URLs, so its handler always returns 404.
-func TransferHandler(backend Backend, logger *slog.Logger) http.Handler {
-	provider, ok := backend.(transferHandlerProvider)
+func (s *Service) TransferHandler() http.Handler {
+	provider, ok := s.backend.(transferHandlerProvider)
 	if !ok {
 		return http.NotFoundHandler()
 	}
-	return provider.transferHandler(logger)
+	return provider.transferHandler(s.logger)
 }
 
 func (s *fileStore) transferHandler(logger *slog.Logger) http.Handler {
@@ -33,7 +33,7 @@ func (s *fileStore) transferHandler(logger *slog.Logger) http.Handler {
 }
 
 type transferHandler struct {
-	store  BlobStore
+	store  blobStore
 	key    []byte
 	logger *slog.Logger
 }
@@ -74,7 +74,7 @@ func (h transferHandler) put(w http.ResponseWriter, r *http.Request) {
 		r.Context(),
 		claims.Key,
 		r.Body,
-		PutOptions{},
+		putOptions{},
 	); err != nil {
 		h.logError(r, "put-storage-object", err, "key", claims.Key)
 		w.WriteHeader(http.StatusInternalServerError)
@@ -95,16 +95,16 @@ func (h transferHandler) verify(
 	w http.ResponseWriter,
 	r *http.Request,
 	op string,
-) (BlobCapabilityClaims, bool) {
-	claims, err := capability.Verify[BlobCapabilityClaims](h.key, r.URL.Query().Get("cap"), op, time.Now())
+) (blobCapabilityClaims, bool) {
+	claims, err := capability.Verify[blobCapabilityClaims](h.key, r.URL.Query().Get("cap"), op, time.Now())
 	requestKey := strings.TrimPrefix(r.URL.Path, "/storage/")
 	switch {
 	case errors.Is(err, capability.ErrExpired):
 		w.WriteHeader(http.StatusGone)
-		return BlobCapabilityClaims{}, false
+		return blobCapabilityClaims{}, false
 	case err != nil || claims.Key == "" || requestKey != claims.Key:
 		w.WriteHeader(http.StatusUnauthorized)
-		return BlobCapabilityClaims{}, false
+		return blobCapabilityClaims{}, false
 	}
 	return claims, true
 }

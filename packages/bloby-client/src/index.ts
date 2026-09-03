@@ -7,28 +7,32 @@ export interface UploadProgress {
 export interface UploadTarget {
   url: string;
   method: "PUT";
-  headers: Record<string, string>;
+  headers?: Record<string, string>;
 }
 
 export interface MultipartUploadRequest {
   signPart: (partNumber: number, signal?: AbortSignal) => Promise<UploadTarget>;
 }
 
+export type UploadAction =
+  | { strategy: "direct-put"; target: UploadTarget }
+  | { strategy: "multipart" };
+
 export type UploadRequest =
-  | ({ strategy: "direct-put" } & UploadTarget)
+  | Extract<UploadAction, { strategy: "direct-put" }>
   | {
       strategy: "multipart";
       multipart: MultipartUploadRequest;
     };
 
-export interface CompletedUploadPart {
-  partNumber: number;
+export interface CompletedPart {
+  part_number: number;
   etag: string;
 }
 
 export type UploadResult =
   | { strategy: "direct-put" }
-  | { strategy: "multipart"; parts: CompletedUploadPart[] };
+  | { strategy: "multipart"; parts: CompletedPart[] };
 
 type UploadContext = {
   blob: Blob;
@@ -46,7 +50,7 @@ const maximumMultipartParts = 10_000;
 export async function upload(request: UploadExecution): Promise<UploadResult> {
   if (request.strategy === "direct-put") {
     await uploadTarget(
-      request,
+      request.target,
       request.blob,
       request.blob.size,
       0,
@@ -65,7 +69,7 @@ async function uploadWithMultipartProgress(
   throwIfCancelled(signal);
 
   const partSize = Math.max(multipartPartSize, Math.ceil(blob.size / maximumMultipartParts));
-  const parts: CompletedUploadPart[] = [];
+  const parts: CompletedPart[] = [];
   let completedBytes = 0;
 
   for (let offset = 0, partNumber = 1; offset < blob.size; offset += partSize, partNumber++) {
@@ -79,7 +83,7 @@ async function uploadWithMultipartProgress(
       onProgress,
       signal,
     );
-    parts.push({ partNumber, etag });
+    parts.push({ part_number: partNumber, etag });
     completedBytes += chunk.size;
     onProgress?.(uploadProgress(completedBytes, blob.size));
   }
@@ -162,7 +166,7 @@ function uploadTarget(
 
     signal?.addEventListener("abort", abort, { once: true });
     xhr.open(target.method, target.url);
-    for (const [key, value] of Object.entries(target.headers)) {
+    for (const [key, value] of Object.entries(target.headers ?? {})) {
       xhr.setRequestHeader(key, value);
     }
     xhr.send(body);

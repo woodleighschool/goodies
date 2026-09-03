@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
@@ -29,9 +30,9 @@ type fileStore struct {
 func (s *fileStore) beginUpload(ctx context.Context, key string, _ int64) (UploadAction, error) {
 	target, err := s.PresignPut(ctx, key, 0)
 	if err != nil {
-		return nil, err
+		return UploadAction{}, err
 	}
-	return DirectUploadAction{Target: target}, nil
+	return UploadAction{Strategy: StrategyDirectPut, Target: &target}, nil
 }
 
 func newFileStore(root, baseURL, capabilityKeyHex string, ttl time.Duration) (*fileStore, error) {
@@ -79,27 +80,27 @@ func (s *fileStore) resolve(key string) (string, error) {
 	return path, nil
 }
 
-func (s *fileStore) Open(_ context.Context, key string) (ObjectReader, ObjectInfo, error) {
+func (s *fileStore) Open(_ context.Context, key string) (io.ReadSeekCloser, objectInfo, error) {
 	path, err := s.resolve(key)
 	if err != nil {
-		return nil, ObjectInfo{}, err
+		return nil, objectInfo{}, err
 	}
 	f, err := os.Open(path) //nolint:gosec // resolve confines the path to the configured storage root.
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, ObjectInfo{}, ErrObjectNotFound
+		return nil, objectInfo{}, ErrObjectNotFound
 	}
 	if err != nil {
-		return nil, ObjectInfo{}, fmt.Errorf("open %q: %w", key, err)
+		return nil, objectInfo{}, fmt.Errorf("open %q: %w", key, err)
 	}
 	info, err := f.Stat()
 	if err != nil {
 		_ = f.Close()
-		return nil, ObjectInfo{}, fmt.Errorf("stat %q: %w", key, err)
+		return nil, objectInfo{}, fmt.Errorf("stat %q: %w", key, err)
 	}
-	return fileObjectReader{ReadSeeker: f, Closer: f}, ObjectInfo{Size: info.Size()}, nil
+	return fileObjectReader{ReadSeeker: f, Closer: f}, objectInfo{Size: info.Size()}, nil
 }
 
-func (s *fileStore) Put(_ context.Context, key string, r io.Reader, _ PutOptions) error {
+func (s *fileStore) Put(_ context.Context, key string, r io.Reader, _ putOptions) error {
 	path, err := s.resolve(key)
 	if err != nil {
 		return err
@@ -155,9 +156,9 @@ func (s *fileStore) PresignGet(
 	_ context.Context,
 	key string,
 	ttl time.Duration,
-	opts GetOptions,
+	opts getOptions,
 ) (string, error) {
-	return s.blobURL(BlobCapabilityClaims{
+	return s.blobURL(blobCapabilityClaims{
 		Op:          capability.OpGet,
 		Key:         key,
 		Exp:         time.Now().Add(s.expires(ttl)).Unix(),
@@ -170,7 +171,7 @@ func (s *fileStore) PresignPut(
 	key string,
 	ttl time.Duration,
 ) (UploadTarget, error) {
-	url, err := s.blobURL(BlobCapabilityClaims{
+	url, err := s.blobURL(blobCapabilityClaims{
 		Op:  capability.OpPut,
 		Key: key,
 		Exp: time.Now().Add(s.expires(ttl)).Unix(),
@@ -184,7 +185,7 @@ func (s *fileStore) PresignPut(
 	}, nil
 }
 
-func (s *fileStore) blobURL(claims BlobCapabilityClaims) (string, error) {
+func (s *fileStore) blobURL(claims blobCapabilityClaims) (string, error) {
 	token, err := capability.Sign(s.capabilityKey, claims)
 	if err != nil {
 		return "", err
@@ -217,4 +218,102 @@ func (s *fileStore) expires(ttl time.Duration) time.Duration {
 type fileObjectReader struct {
 	io.ReadSeeker
 	io.Closer
+}
+
+// seal pins the staging inode without replacing an existing published file.
+// PUT commits with rename, so later PUTs cannot change the pinned inode.
+func (s *fileStore) seal(_ context.Context, stagingKey, key string) error {
+	source, err := s.resolve(stagingKey)
+	if err != nil {
+		return err
+	}
+	destination, err := s.resolve(key)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(destination), 0o750); err != nil {
+		return err
+	}
+	if err := os.Link(source, destination); err != nil && !errors.Is(err, os.ErrExist) {
+		// A concurrent finalizer may have removed staging after publishing.
+		if errors.Is(err, os.ErrNotExist) {
+			if _, statErr := os.Stat(destination); statErr == nil {
+				return nil
+			}
+			return ErrObjectNotFound
+		}
+		return fmt.Errorf("seal %q: %w", key, err)
+	}
+	return nil
+}
+
+func (s *fileStore) cleanupStaging(ctx context.Context, before time.Time) error {
+	root, err := os.OpenRoot(s.root)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = root.Close() }()
+	return fs.WalkDir(root.FS(), strings.TrimSuffix(stagingPrefix, "/"), func(path string, entry fs.DirEntry, walkErr error) error {
+		if errors.Is(walkErr, os.ErrNotExist) {
+			return nil
+		}
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		info, err := entry.Info()
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if info.ModTime().Before(before) {
+			if err := root.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+			_ = root.Remove(filepath.Dir(path))
+		}
+		return nil
+	})
+}
+
+func (s *fileStore) expiredCandidates(ctx context.Context, before time.Time) ([]string, error) {
+	root, err := os.OpenRoot(s.root)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = root.Close() }()
+	var keys []string
+	err = fs.WalkDir(root.FS(), strings.TrimSuffix(candidatePrefix, "/"), func(path string, entry fs.DirEntry, walkErr error) error {
+		if errors.Is(walkErr, os.ErrNotExist) {
+			return nil
+		}
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		info, err := entry.Info()
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if info.ModTime().Before(before) {
+			keys = append(keys, path)
+		}
+		return nil
+	})
+	return keys, err
 }

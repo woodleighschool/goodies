@@ -3,289 +3,338 @@ package bloby
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
+	"net/http/httptest"
+	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
-func TestIngestorDirectLifecycle(t *testing.T) {
-	object := &Object{ID: 42, Prefix: "munki/packages", Filename: "Installer.pkg"}
-	var markedSize int64
-	registry := registryStub{
-		createPending: func(_ context.Context, prefix, filename string) (*Object, error) {
-			if prefix != object.Prefix || filename != object.Filename {
-				t.Errorf("CreatePending(%q, %q)", prefix, filename)
+func newFileService(t *testing.T) (*Service, *memoryRegistry) {
+	t.Helper()
+	registry := newMemoryRegistry()
+	service, err := New(t.Context(), registry, Config{Kind: KindFile, TransferTTL: time.Minute, File: FileConfig{Root: t.TempDir(), BaseURL: "https://storage.invalid", CapabilityKeyHex: testCapabilityKeyHex}}, testLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return service, registry
+}
+
+func putTarget(t *testing.T, handler http.Handler, target UploadTarget, body string) {
+	t.Helper()
+	req := httptest.NewRequestWithContext(t.Context(), target.Method, target.URL, strings.NewReader(body))
+	for name, value := range target.Headers {
+		req.Header.Set(name, value)
+	}
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("upload status %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func readAvailable(t *testing.T, service *Service, object Object) string {
+	t.Helper()
+	reader, err := service.Open(t.Context(), object)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reader.Close() }()
+	body, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if int64(len(body)) != object.SizeBytesValue() || hashString(string(body)) != object.SHA256Value() {
+		t.Fatalf("metadata differs from delivered bytes: object=%#v, size=%d, hash=%s", object, len(body), hashString(string(body)))
+	}
+	return string(body)
+}
+
+func TestFileUploadReplayCannotChangePublishedObject(t *testing.T) {
+	service, registry := newFileService(t)
+	object, action, err := service.BeginDirect(t.Context(), "documents/reports", `folder\Report.pdf`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if object.Filename != "Report.pdf" || action.Strategy != StrategyDirectPut {
+		t.Fatalf("begin: %#v %#v", object, action)
+	}
+	handler := service.TransferHandler()
+	original := "%PDF-1.7\noriginal document"
+	putTarget(t, handler, *action.Target, original)
+	if _, err := service.DownloadURL(t.Context(), *object, 0, DeliveryOptions{}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("pending URL error: %v", err)
+	}
+	if _, err := service.Finalize(t.Context(), object.ID, "documents/other"); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("wrong prefix error: %v", err)
+	}
+	available, err := service.Finalize(t.Context(), object.ID, object.Prefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	putTarget(t, handler, *action.Target, "replacement after publication")
+	again, err := service.Finalize(t.Context(), object.ID, object.Prefix)
+	if err != nil || !again.AvailableAt.Equal(*available.AvailableAt) {
+		t.Fatalf("retry: %#v %v", again, err)
+	}
+	if got := readAvailable(t, service, *again); got != original {
+		t.Fatalf("published bytes %q", got)
+	}
+	items, total, err := service.ListByPrefix(t.Context(), object.Prefix, ListOptions{})
+	if err != nil || total != 1 || len(items) != 1 {
+		t.Fatalf("listing %v %d %v", items, total, err)
+	}
+	if err := service.Delete(t.Context(), object.ID, object.Prefix); err != nil {
+		t.Fatal(err)
+	}
+	putTarget(t, handler, *action.Target, "late write after deletion")
+	if _, err := registry.GetByID(t.Context(), object.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("deleted registry entry: %v", err)
+	}
+	if _, _, err := service.backend.Open(t.Context(), available.Key()); !errors.Is(err, ErrObjectNotFound) {
+		t.Fatalf("deleted final bytes: %v", err)
+	}
+	file, ok := service.backend.(*fileStore)
+	if !ok {
+		t.Fatal("expected file backend")
+	}
+	staging, err := file.resolve(object.stagingKey())
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(staging, old, old); err != nil {
+		t.Fatal(err)
+	}
+	service.sweepExpiredUploads(t.Context())
+	if _, _, err := file.Open(t.Context(), object.stagingKey()); !errors.Is(err, ErrObjectNotFound) {
+		t.Fatalf("orphan staging retained: %v", err)
+	}
+}
+
+func TestFileFinalizeRetryPublishesSelectedCandidate(t *testing.T) {
+	service, registry := newFileService(t)
+	object, action, err := service.Begin(t.Context(), "documents/reports", "report.txt", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	putTarget(t, service.TransferHandler(), *action.Target, "original")
+	var attempts atomic.Int32
+	registry.beforeMark = func() error {
+		if attempts.Add(1) == 1 {
+			return errors.New("temporary registry failure")
+		}
+		return nil
+	}
+	if _, err := service.Finalize(t.Context(), object.ID, object.Prefix); err == nil {
+		t.Fatal("expected registry failure")
+	}
+	putTarget(t, service.TransferHandler(), *action.Target, "replayed")
+	available, err := service.Finalize(t.Context(), object.ID, object.Prefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := readAvailable(t, service, *available); got != "replayed" {
+		t.Fatalf("retry did not publish its selected candidate: %q", got)
+	}
+}
+
+func TestFileConcurrentFinalizersPublishOneRepresentation(t *testing.T) {
+	service, _ := newFileService(t)
+	object, action, err := service.BeginDirect(t.Context(), "documents/reports", "report.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	putTarget(t, service.TransferHandler(), *action.Target, "initial")
+	var group sync.WaitGroup
+	for range 12 {
+		group.Go(func() {
+			available, err := service.Finalize(t.Context(), object.ID, object.Prefix)
+			if err != nil {
+				t.Errorf("finalize: %v", err)
+				return
 			}
-			return object, nil
-		},
-		getByID: func(_ context.Context, _ int64) (*Object, error) {
-			return object, nil
-		},
-		refreshPending: func(_ context.Context, _ int64) (*Object, error) {
-			return object, nil
-		},
-		markAvailable: func(
-			_ context.Context,
-			_ int64,
-			sizeBytes int64,
-			contentType string,
-			_ string,
-		) (*Object, error) {
-			markedSize = sizeBytes
-			now := time.Now()
-			available := *object
-			available.ContentType = contentType
-			available.AvailableAt = &now
-			return &available, nil
-		},
+			if got := readAvailable(t, service, *available); got != "initial" {
+				t.Errorf("published %q", got)
+			}
+		})
 	}
-	backend := newTestFileStore(t)
-	ingestor := NewIngestor(NewObjectStore(registry, backend, testLogger()), backend)
+	group.Wait()
+}
 
-	created, action, err := ingestor.Begin(t.Context(), object.Prefix, object.Filename, 10)
+func TestDeletingDuringFinalizeDoesNotRepublishBytes(t *testing.T) {
+	service, registry := newFileService(t)
+	object, action, err := service.BeginDirect(t.Context(), "documents/reports", "report.txt")
 	if err != nil {
-		t.Fatalf("Begin: %v", err)
+		t.Fatal(err)
 	}
-	direct, ok := action.(DirectUploadAction)
-	if !ok || direct.Target.Method != http.MethodPut || created.ID != object.ID {
-		t.Fatalf("Begin = %#v, %#v", created, action)
+	putTarget(t, service.TransferHandler(), *action.Target, "original")
+	sealed := make(chan struct{})
+	resume := make(chan struct{})
+	registry.beforeMark = func() error { close(sealed); <-resume; return nil }
+	result := make(chan error, 1)
+	go func() { _, err := service.Finalize(t.Context(), object.ID, object.Prefix); result <- err }()
+	<-sealed
+	if err := service.Delete(t.Context(), object.ID, object.Prefix); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := ingestor.Finalize(t.Context(), object.ID, "munki/icons"); !errors.Is(err, ErrInvalidInput) {
-		t.Fatalf("Finalize with wrong prefix = %v", err)
+	close(resume)
+	if err := <-result; !errors.Is(err, ErrNotFound) {
+		t.Fatalf("finalize after delete: %v", err)
 	}
-	if err := backend.Put(t.Context(), object.Key(), strings.NewReader("installer"), PutOptions{}); err != nil {
-		t.Fatalf("Put: %v", err)
+	keys, err := service.backend.expiredCandidates(t.Context(), time.Now().Add(time.Hour))
+	if err != nil || len(keys) != 0 {
+		t.Fatalf("candidate bytes after delete: %v %v", keys, err)
 	}
-	available, err := ingestor.Finalize(t.Context(), object.ID, object.Prefix)
+}
+
+func TestServiceWriteAndCleanup(t *testing.T) {
+	service, registry := newFileService(t)
+	body := `{"name":"production"}`
+	written, err := service.Write(t.Context(), "munki/catalogues", "production.json", "APPLICATION/JSON", []byte(body))
 	if err != nil {
-		t.Fatalf("Finalize: %v", err)
+		t.Fatal(err)
 	}
-	if !available.Available() || markedSize != int64(len("installer")) {
-		t.Fatalf("available = %#v, marked size = %d", available, markedSize)
+	if written.ContentType != "application/json" || readAvailable(t, service, *written) != body {
+		t.Fatalf("write %#v", written)
 	}
-}
-
-func TestIngestorDirectOperations(t *testing.T) {
-	t.Run("presign and delete", func(t *testing.T) {
-		object := &Object{ID: 42, Prefix: "munki/packages", Filename: "Direct.pkg"}
-		deleted := false
-		registry := registryStub{
-			createPending: func(context.Context, string, string) (*Object, error) {
-				return object, nil
-			},
-			getByID: func(context.Context, int64) (*Object, error) {
-				return object, nil
-			},
-			refreshPending: func(context.Context, int64) (*Object, error) {
-				return object, nil
-			},
-			delete: func(context.Context, int64) (*Object, error) {
-				deleted = true
-				return object, nil
-			},
-		}
-		backend := newTestFileStore(t)
-		ingestor := NewIngestor(NewObjectStore(registry, backend, testLogger()), backend)
-
-		created, target, err := ingestor.BeginDirect(t.Context(), object.Prefix, object.Filename)
-		if err != nil || target.Method != http.MethodPut || created.ID != object.ID {
-			t.Fatalf("BeginDirect = %#v, %#v, %v", created, target, err)
-		}
-		if err := ingestor.Delete(t.Context(), object.ID, object.Prefix); err != nil {
-			t.Fatalf("Delete: %v", err)
-		}
-		if !deleted {
-			t.Fatal("Delete did not remove the registry object")
-		}
-	})
-
-	t.Run("server write", func(t *testing.T) {
-		object := &Object{ID: 43, Prefix: "munki/catalogues", Filename: "production.json"}
-		registry := registryStub{
-			createPending: func(context.Context, string, string) (*Object, error) {
-				return object, nil
-			},
-			markAvailable: func(
-				_ context.Context,
-				_ int64,
-				_ int64,
-				_ string,
-				_ string,
-			) (*Object, error) {
-				now := time.Now()
-				available := *object
-				available.AvailableAt = &now
-				return &available, nil
-			},
-		}
-		backend := newTestFileStore(t)
-		ingestor := NewIngestor(NewObjectStore(registry, backend, testLogger()), backend)
-
-		written, err := ingestor.Write(
-			t.Context(), object.Prefix, object.Filename, "application/json", []byte(`{"name":"production"}`),
-		)
-		if err != nil || !written.Available() {
-			t.Fatalf("Write = %#v, %v", written, err)
-		}
-	})
-}
-
-func TestIngestorMultipartLifecycle(t *testing.T) {
-	object := &Object{ID: 42, Prefix: "munki/packages", Filename: "Installer.pkg"}
-	registry := registryStub{
-		createPending: func(context.Context, string, string) (*Object, error) {
-			return object, nil
-		},
-		getByID: func(context.Context, int64) (*Object, error) {
-			return object, nil
-		},
-		refreshPending: func(context.Context, int64) (*Object, error) {
-			return object, nil
-		},
-		recordMultipartUploadID: func(_ context.Context, _ int64, uploadID string) (string, bool, error) {
-			object.MultipartUploadID = &uploadID
-			return uploadID, true, nil
-		},
-		clearMultipartUploadID: func(context.Context, int64, string) error {
-			object.MultipartUploadID = nil
-			return nil
-		},
-		markAvailable: func(
-			_ context.Context,
-			_ int64,
-			_ int64,
-			_ string,
-			_ string,
-		) (*Object, error) {
-			now := time.Now()
-			available := *object
-			available.AvailableAt = &now
-			return &available, nil
-		},
-	}
-	backend := &recordingMultipartBackend{Backend: newTestFileStore(t)}
-	ingestor := NewIngestor(NewObjectStore(registry, backend, testLogger()), backend)
-
-	created, action, err := ingestor.Begin(t.Context(), object.Prefix, object.Filename, 1)
+	abandoned, action, err := service.BeginDirect(t.Context(), "documents/reports", "abandoned.txt")
 	if err != nil {
-		t.Fatalf("Begin: %v", err)
+		t.Fatal(err)
 	}
-	if _, ok := action.(MultipartUploadAction); !ok || created.ID != object.ID {
-		t.Fatalf("Begin = %#v, %T", created, action)
+	putTarget(t, service.TransferHandler(), *action.Target, "abandoned")
+	registry.mu.Lock()
+	old := registry.objects[abandoned.ID]
+	old.UpdatedAt = time.Now().Add(-48 * time.Hour)
+	registry.objects[old.ID] = old
+	registry.mu.Unlock()
+	service.sweepExpiredUploads(t.Context())
+	if _, err := registry.GetByID(t.Context(), abandoned.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("abandoned entry: %v", err)
 	}
-	if _, err := ingestor.PresignMultipartPart(t.Context(), object.ID, object.Prefix, 7); err != nil {
-		t.Fatalf("PresignMultipartPart: %v", err)
-	}
-	if err := ingestor.CompleteMultipart(
-		t.Context(), object.ID, object.Prefix, []CompletedPart{{PartNumber: 1, ETag: `"part"`}},
-	); err != nil {
-		t.Fatalf("CompleteMultipart: %v", err)
-	}
-	available, err := ingestor.Finalize(t.Context(), object.ID, object.Prefix)
-	if err != nil || !available.Available() {
-		t.Fatalf("Finalize = %#v, %v", available, err)
-	}
-	if backend.presignCalls != 1 || backend.completed != 1 {
-		t.Fatalf("multipart calls = presign %d, complete %d", backend.presignCalls, backend.completed)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	service.DeleteUnreferenced(ctx, written.ID)
+	if _, err := registry.GetByID(t.Context(), written.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unreferenced entry: %v", err)
 	}
 }
 
-func TestIngestorDeleteAbortsMultipart(t *testing.T) {
-	uploadID := "upload-1"
-	object := &Object{
-		ID: 42, Prefix: "munki/packages", Filename: "Installer.pkg", MultipartUploadID: &uploadID,
+func TestFileAmbiguousPublishKeepsCommittedCandidate(t *testing.T) {
+	service, registry := newFileService(t)
+	object, action, err := service.BeginDirect(t.Context(), "documents/reports", "ambiguous.txt")
+	if err != nil {
+		t.Fatal(err)
 	}
-	registry := registryStub{
-		getByID: func(context.Context, int64) (*Object, error) {
-			return object, nil
-		},
-		refreshPending: func(context.Context, int64) (*Object, error) {
-			return object, nil
-		},
-		delete: func(context.Context, int64) (*Object, error) {
-			return object, nil
-		},
+	putTarget(t, service.TransferHandler(), *action.Target, "committed bytes")
+	registry.afterMark = func() error { return errors.New("commit response lost") }
+	if _, err := service.Finalize(t.Context(), object.ID, object.Prefix); err == nil {
+		t.Fatal("expected uncertain commit response")
 	}
-	backend := &recordingMultipartBackend{Backend: newTestFileStore(t)}
-	ingestor := NewIngestor(NewObjectStore(registry, backend, testLogger()), backend)
-
-	if err := ingestor.Delete(t.Context(), object.ID, object.Prefix); err != nil {
-		t.Fatalf("Delete: %v", err)
+	putTarget(t, service.TransferHandler(), *action.Target, "late replay")
+	available, err := service.Finalize(t.Context(), object.ID, object.Prefix)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if backend.aborted != 1 {
-		t.Fatalf("abort calls = %d, want 1", backend.aborted)
+	if readAvailable(t, service, *available) != "committed bytes" {
+		t.Fatal("retry replaced committed candidate")
 	}
 }
 
-func TestUploadCleanupRemovesAbandonedUpload(t *testing.T) {
-	object := Object{ID: 42, Prefix: "munki/packages", Filename: "Partial.pkg"}
-	deleted := make(chan struct{})
-	registry := registryStub{
-		claimExpiredPending: func(context.Context, time.Time, time.Time, int) ([]Object, error) {
-			return []Object{object}, nil
-		},
-		deleteExpiredPending: func(context.Context, int64) error {
-			close(deleted)
-			return nil
-		},
+func TestCandidateCleanupResolvesRegistryOwnership(t *testing.T) {
+	for _, kind := range []string{"file", "s3"} {
+		t.Run(kind, func(t *testing.T) {
+			var service *Service
+			var ageCandidates func()
+			old := time.Now().Add(-48 * time.Hour)
+			if kind == "file" {
+				service, _ = newFileService(t)
+				ageCandidates = func() {
+					keys, err := service.backend.expiredCandidates(t.Context(), time.Now().Add(time.Hour))
+					if err != nil {
+						t.Fatal(err)
+					}
+					file, ok := service.backend.(*fileStore)
+					if !ok {
+						t.Fatal("expected file backend")
+					}
+					for _, key := range keys {
+						path, err := file.resolve(key)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if err := os.Chtimes(path, old, old); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+			} else {
+				var fixture *s3Fixture
+				service, fixture = newS3Fixture(t)
+				ageCandidates = func() {
+					fixture.mu.Lock()
+					defer fixture.mu.Unlock()
+					for key, object := range fixture.objects {
+						object.modified = old
+						fixture.objects[key] = object
+					}
+				}
+			}
+			registry, ok := service.registry.(*memoryRegistry)
+			if !ok {
+				t.Fatal("expected memory registry")
+			}
+			available, err := service.Write(t.Context(), "documents/reports", "selected.txt", "text/plain", []byte("selected"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			pending, _, err := service.BeginDirect(t.Context(), "documents/reports", "pending.txt")
+			if err != nil {
+				t.Fatal(err)
+			}
+			unused := candidateKey(available)
+			inFlight := candidateKey(pending)
+			orphan := candidateKey(&Object{ID: 9999, Filename: "orphan.txt"})
+			for _, key := range []string{unused, inFlight, orphan} {
+				if err := service.backend.Put(t.Context(), key, strings.NewReader("candidate"), putOptions{}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ageCandidates()
+			registry.getFailure = errors.New("registry unavailable")
+			service.sweepExpiredUploads(t.Context())
+			keys, err := service.backend.expiredCandidates(t.Context(), time.Now())
+			if err != nil || len(keys) != 4 {
+				t.Fatalf("cleanup removed bytes without resolving ownership: %v %v", keys, err)
+			}
+			registry.getFailure = nil
+			service.sweepExpiredUploads(t.Context())
+			keys, err = service.backend.expiredCandidates(t.Context(), time.Now())
+			if err != nil || len(keys) != 2 {
+				t.Fatalf("cleanup retained orphan candidates: %v %v", keys, err)
+			}
+			for _, key := range keys {
+				if key != available.Key() && key != inFlight {
+					t.Fatalf("unexpected retained candidate %q", key)
+				}
+			}
+			if readAvailable(t, service, *available) != "selected" {
+				t.Fatal("cleanup altered selected bytes")
+			}
+			registry.mu.Lock()
+			object := registry.objects[pending.ID]
+			object.UpdatedAt = old
+			registry.objects[pending.ID] = object
+			registry.mu.Unlock()
+			service.sweepExpiredUploads(t.Context())
+			keys, err = service.backend.expiredCandidates(t.Context(), time.Now())
+			if err != nil || len(keys) != 1 || keys[0] != available.Key() {
+				t.Fatalf("expired pending candidate remains: %v %v", keys, err)
+			}
+		})
 	}
-	backend := newTestFileStore(t)
-	if err := backend.Put(t.Context(), object.Key(), strings.NewReader("partial"), PutOptions{}); err != nil {
-		t.Fatalf("Put: %v", err)
-	}
-	ingestor := NewIngestor(NewObjectStore(registry, backend, testLogger()), backend)
-
-	cleanup := StartUploadCleanup(t.Context(), ingestor, time.Minute, testLogger())
-	select {
-	case <-deleted:
-	case <-time.After(time.Second):
-		t.Fatal("cleanup did not remove abandoned upload")
-	}
-	cleanup.Stop()
-	if _, _, err := backend.Open(t.Context(), object.Key()); !errors.Is(err, ErrObjectNotFound) {
-		t.Fatalf("Open after cleanup = %v", err)
-	}
-}
-
-type recordingMultipartBackend struct {
-	Backend
-
-	presignCalls int
-	completed    int
-	aborted      int
-}
-
-func (*recordingMultipartBackend) beginUpload(context.Context, string, int64) (UploadAction, error) {
-	return MultipartUploadAction{}, nil
-}
-
-func (*recordingMultipartBackend) CreateMultipartUpload(context.Context, string) (string, error) {
-	return "upload-1", nil
-}
-
-func (b *recordingMultipartBackend) PresignMultipartPart(
-	_ context.Context,
-	_ string,
-	_ string,
-	_ int32,
-	_ time.Duration,
-) (UploadTarget, error) {
-	b.presignCalls++
-	return UploadTarget{URL: "https://storage.invalid/upload", Method: http.MethodPut}, nil
-}
-
-func (b *recordingMultipartBackend) CompleteMultipartUpload(
-	ctx context.Context,
-	key string,
-	_ string,
-	_ []CompletedPart,
-) error {
-	b.completed++
-	return b.Put(ctx, key, strings.NewReader("assembled"), PutOptions{})
-}
-
-func (b *recordingMultipartBackend) AbortMultipartUpload(context.Context, string, string) error {
-	b.aborted++
-	return nil
 }
