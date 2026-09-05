@@ -1,6 +1,6 @@
 {
   "name": "@woodleighschool/authz",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Resource permissions with optional React bindings.",
   "homepage": "https://github.com/woodleighschool/goodies/tree/main/packages/authz",
   "bugs": "https://github.com/woodleighschool/goodies/issues",
