@@ -2,20 +2,19 @@
 package authhuma
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/woodleighschool/goodies/auth/authn"
-	"github.com/woodleighschool/goodies/auth/browser"
-	"github.com/woodleighschool/goodies/auth/internal/httpauth"
 )
 
 // OptionalAuth attaches a user to the Huma context when credentials are
 // present and valid. Missing credentials are allowed; other failures reject
 // the request.
-func OptionalAuth(api huma.API, authenticator browser.Authenticator, logger *slog.Logger) func(huma.Context, func(huma.Context)) {
+func OptionalAuth(api huma.API, authenticator Authenticator, logger *slog.Logger) func(huma.Context, func(huma.Context)) {
 	return func(ctx huma.Context, next func(huma.Context)) {
 		principal, err := authenticator.Authenticate(ctx.Context(), ctx.Header("Authorization"))
 		if err == nil {
@@ -32,7 +31,7 @@ func OptionalAuth(api huma.API, authenticator browser.Authenticator, logger *slo
 }
 
 // RequireAuth attaches the authenticated user to protected Huma operations.
-func RequireAuth(api huma.API, authenticator browser.Authenticator, logger *slog.Logger) func(huma.Context, func(huma.Context)) {
+func RequireAuth(api huma.API, authenticator Authenticator, logger *slog.Logger) func(huma.Context, func(huma.Context)) {
 	return func(ctx huma.Context, next func(huma.Context)) {
 		principal, err := authenticator.Authenticate(ctx.Context(), ctx.Header("Authorization"))
 		if err != nil {
@@ -58,7 +57,12 @@ func ProtectedOperation(api huma.API) func(*huma.Operation, func(*huma.Operation
 			{"cookieAuth": {}},
 			{"bearerAuth": {}},
 		}
-		httpauth.DeclareErrorResponse(api, op, http.StatusUnauthorized)
+		declareErrorResponse(api, op, http.StatusUnauthorized)
 		next(op)
 	}
+}
+
+// Authenticator resolves request credentials into an admitted principal.
+type Authenticator interface {
+	Authenticate(context.Context, string) (*authn.Principal, error)
 }

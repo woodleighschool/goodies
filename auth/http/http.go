@@ -1,6 +1,8 @@
-package browser
+// Package authhttp adapts authentication and authorization to net/http.
+package authhttp
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -8,8 +10,8 @@ import (
 	"github.com/woodleighschool/goodies/auth/authn"
 )
 
-// RequireHTTP attaches the authenticated user to raw HTTP routes.
-func RequireHTTP(authenticator Authenticator, logger *slog.Logger) func(http.Handler) http.Handler {
+// RequireAuth attaches the authenticated user to raw HTTP routes.
+func RequireAuth(authenticator Authenticator, logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			principal, err := authenticator.Authenticate(req.Context(), req.Header.Get("Authorization"))
@@ -26,4 +28,9 @@ func RequireHTTP(authenticator Authenticator, logger *slog.Logger) func(http.Han
 			next.ServeHTTP(w, req.WithContext(authn.WithPrincipal(req.Context(), principal)))
 		})
 	}
+}
+
+// Authenticator resolves request credentials into an admitted principal.
+type Authenticator interface {
+	Authenticate(context.Context, string) (*authn.Principal, error)
 }

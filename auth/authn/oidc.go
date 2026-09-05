@@ -51,7 +51,7 @@ func configureOIDC(ctx context.Context, cfg OIDCConfig) (*oidcProvider, error) {
 	if err != nil {
 		return nil, fmt.Errorf("discover oidc issuer: %w", err)
 	}
-	scopes := cfg.Scopes
+	scopes := append([]string(nil), cfg.Scopes...)
 	if len(scopes) == 0 {
 		scopes = []string{oidc.ScopeOpenID, "email", "profile"}
 	}
@@ -77,9 +77,9 @@ func (s *Service) SSOEnabled() bool {
 	return s.oidc != nil
 }
 
-// BeginSSO generates a state and nonce, stores them on the session, and
+// beginSSO generates a state and nonce, stores them on the session, and
 // returns the provider authorization URL the caller should redirect to.
-func (s *Service) BeginSSO(ctx context.Context) (string, error) {
+func (s *Service) beginSSO(ctx context.Context) (string, error) {
 	if s.oidc == nil {
 		return "", ErrSSONotConfigured
 	}
@@ -96,9 +96,9 @@ func (s *Service) BeginSSO(ctx context.Context) (string, error) {
 	return s.oidc.oauth2.AuthCodeURL(state, oidc.Nonce(nonce)), nil
 }
 
-// CompleteSSO verifies a single-use callback and resolves its provisioned principal.
+// completeSSO verifies a single-use callback and resolves its provisioned principal.
 // It does not create a browser session or apply application admission policy.
-func (s *Service) CompleteSSO(ctx context.Context, state, code string) (*Principal, error) {
+func (s *Service) completeSSO(ctx context.Context, state, code string) (*Principal, error) {
 	if s.oidc == nil {
 		return nil, ErrSSONotConfigured
 	}

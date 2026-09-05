@@ -106,9 +106,3 @@ func (s *Service) validate(resource Resource, access Access) error {
 	}
 	return nil
 }
-
-// Authorizer checks one or more required permissions.
-type Authorizer interface {
-	Can(ctx context.Context, userID int64, resource Resource, required Access) (bool, error)
-	CanAll(ctx context.Context, userID int64, requirements ...Requirement) (bool, error)
-}

@@ -6,35 +6,23 @@ import (
 	"net/http"
 	"strings"
 	"time"
-
-	"github.com/woodleighschool/goodies/bloby/internal/capability"
 )
-
-type transferHandlerProvider interface {
-	transferHandler(*slog.Logger) http.Handler
-}
 
 // TransferHandler returns the server-hosted transfer endpoint for backend.
 // S3 transfers use provider-signed URLs, so its handler always returns 404.
 func (s *Service) TransferHandler() http.Handler {
-	provider, ok := s.backend.(transferHandlerProvider)
+	file, ok := s.backend.(*fileStore)
 	if !ok {
 		return http.NotFoundHandler()
 	}
-	return provider.transferHandler(s.logger)
-}
-
-func (s *fileStore) transferHandler(logger *slog.Logger) http.Handler {
 	return transferHandler{
-		store:  s,
-		key:    s.capabilityKey,
-		logger: logger,
+		store:  file,
+		logger: s.logger,
 	}
 }
 
 type transferHandler struct {
-	store  blobStore
-	key    []byte
+	store  *fileStore
 	logger *slog.Logger
 }
 
@@ -50,14 +38,13 @@ func (h transferHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h transferHandler) get(w http.ResponseWriter, r *http.Request) {
-	claims, ok := h.verify(w, r, capability.OpGet)
+	claims, ok := h.verify(w, r, capabilityGet)
 	if !ok {
 		return
 	}
-	if err := serveKey(
+	if err := h.store.serveKey(
 		w,
 		r,
-		h.store,
 		claims.Key,
 		serveOptions{ContentType: claims.ContentType},
 	); err != nil {
@@ -66,7 +53,7 @@ func (h transferHandler) get(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h transferHandler) put(w http.ResponseWriter, r *http.Request) {
-	claims, ok := h.verify(w, r, capability.OpPut)
+	claims, ok := h.verify(w, r, capabilityPut)
 	if !ok {
 		return
 	}
@@ -95,16 +82,16 @@ func (h transferHandler) verify(
 	w http.ResponseWriter,
 	r *http.Request,
 	op string,
-) (blobCapabilityClaims, bool) {
-	claims, err := capability.Verify[blobCapabilityClaims](h.key, r.URL.Query().Get("cap"), op, time.Now())
+) (capabilityClaims, bool) {
+	claims, err := verifyCapability(h.store.capabilityKey, r.URL.Query().Get("cap"), op, time.Now())
 	requestKey := strings.TrimPrefix(r.URL.Path, "/storage/")
 	switch {
-	case errors.Is(err, capability.ErrExpired):
+	case errors.Is(err, errExpiredCapability):
 		w.WriteHeader(http.StatusGone)
-		return blobCapabilityClaims{}, false
+		return capabilityClaims{}, false
 	case err != nil || claims.Key == "" || requestKey != claims.Key:
 		w.WriteHeader(http.StatusUnauthorized)
-		return blobCapabilityClaims{}, false
+		return capabilityClaims{}, false
 	}
 	return claims, true
 }

@@ -15,7 +15,6 @@ import (
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
 	"github.com/woodleighschool/goodies/auth/authn"
 	"github.com/woodleighschool/goodies/auth/authz"
-	"github.com/woodleighschool/goodies/auth/browser"
 )
 
 func TestAuthorizationHTTPBoundaries(t *testing.T) {
@@ -34,13 +33,6 @@ func TestAuthorizationHTTPBoundaries(t *testing.T) {
 			s := newAuthorization(t, &tc.store)
 			var logs bytes.Buffer
 			logger := slog.New(slog.NewJSONHandler(&logs, nil))
-			raw := browser.RequirePermission(s, logger, "users", authz.View)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				p, err := authn.RequirePrincipal(r.Context())
-				if err != nil || p.ID != 42 {
-					t.Fatalf("principal=%v error=%v", p, err)
-				}
-				w.WriteHeader(http.StatusNoContent)
-			}))
 			router := http.NewServeMux()
 			api := humago.New(router, huma.DefaultConfig("test", "test"))
 			huma.Register(api, Require(api, s, logger, "users", authz.View, huma.Operation{OperationID: "users", Method: http.MethodGet, Path: "/users", DefaultStatus: http.StatusNoContent}), func(ctx context.Context, _ *struct{}) (*struct{}, error) {
@@ -50,7 +42,7 @@ func TestAuthorizationHTTPBoundaries(t *testing.T) {
 				}
 				return &struct{}{}, nil
 			})
-			for name, handler := range map[string]http.Handler{"raw": raw, "huma": router} {
+			for name, handler := range map[string]http.Handler{"huma": router} {
 				t.Run(name, func(t *testing.T) {
 					logs.Reset()
 					ctx := t.Context()

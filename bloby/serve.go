@@ -16,8 +16,8 @@ type serveOptions struct {
 	ETag         string
 }
 
-func serveKey(w http.ResponseWriter, r *http.Request, store blobStore, key string, opts serveOptions) error {
-	reader, _, err := store.Open(r.Context(), key)
+func (s *fileStore) serveKey(w http.ResponseWriter, r *http.Request, key string, opts serveOptions) error {
+	reader, err := s.openFile(key)
 	if errors.Is(err, ErrObjectNotFound) {
 		w.WriteHeader(http.StatusNotFound)
 		return nil

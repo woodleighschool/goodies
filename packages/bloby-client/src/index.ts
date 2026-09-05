@@ -12,6 +12,7 @@ export interface UploadTarget {
 
 export interface MultipartUploadRequest {
   signPart: (partNumber: number, signal?: AbortSignal) => Promise<UploadTarget>;
+  complete: (parts: CompletedPart[], signal?: AbortSignal) => Promise<void>;
 }
 
 export type UploadAction =
@@ -30,24 +31,20 @@ export interface CompletedPart {
   etag: string;
 }
 
-export type UploadResult =
-  | { strategy: "direct-put" }
-  | { strategy: "multipart"; parts: CompletedPart[] };
-
-type UploadContext = {
+export interface UploadOptions {
   blob: Blob;
   signal?: AbortSignal;
   onProgress?: (progress: UploadProgress) => void;
-};
-
-export type UploadExecution = UploadRequest & UploadContext;
+}
 
 // Bloby chooses 64 MiB as its browser base part size. S3 separately limits a
 // multipart upload to 10,000 parts.
 const multipartPartSize = 64 * 1024 * 1024;
 const maximumMultipartParts = 10_000;
 
-export async function upload(request: UploadExecution): Promise<UploadResult> {
+// Resolves after storage accepts the complete upload. Publishing and attaching
+// the object remain application operations.
+export async function upload(request: UploadRequest & UploadOptions): Promise<void> {
   if (request.strategy === "direct-put") {
     await uploadTarget(
       request.target,
@@ -57,16 +54,17 @@ export async function upload(request: UploadExecution): Promise<UploadResult> {
       request.onProgress,
       request.signal,
     );
-    return { strategy: "direct-put" };
+    return;
   }
   return uploadWithMultipartProgress(request);
 }
 
 async function uploadWithMultipartProgress(
-  request: Extract<UploadExecution, { strategy: "multipart" }>,
-): Promise<UploadResult> {
+  request: Extract<UploadRequest, { strategy: "multipart" }> & UploadOptions,
+): Promise<void> {
   const { blob, signal, onProgress } = request;
-  throwIfCancelled(signal);
+  signal?.throwIfAborted();
+  if (blob.size === 0) throw new Error("Multipart uploads require a nonempty blob.");
 
   const partSize = Math.max(multipartPartSize, Math.ceil(blob.size / maximumMultipartParts));
   const parts: CompletedPart[] = [];
@@ -88,7 +86,18 @@ async function uploadWithMultipartProgress(
     onProgress?.(uploadProgress(completedBytes, blob.size));
   }
 
-  return { strategy: "multipart", parts };
+  // Completion is idempotent: a lost response must not require transferring
+  // the parts again. Only the storage completion callback is retried.
+  for (let attempt = 0; ; attempt++) {
+    signal?.throwIfAborted();
+    try {
+      await request.multipart.complete(parts, signal);
+      return;
+    } catch (error) {
+      signal?.throwIfAborted();
+      if (attempt === 1) throw error;
+    }
+  }
 }
 
 async function uploadPart(
@@ -102,9 +111,9 @@ async function uploadPart(
 ) {
   let lastError: unknown;
   for (let attempt = 0; attempt < 2; attempt++) {
-    throwIfCancelled(signal);
-    const target = await multipart.signPart(partNumber, signal);
+    signal?.throwIfAborted();
     try {
+      const target = await multipart.signPart(partNumber, signal);
       const etag = await uploadTarget(
         target,
         chunk,
@@ -118,7 +127,7 @@ async function uploadPart(
       }
       return etag;
     } catch (error) {
-      if (signal?.aborted) throw cancelledError();
+      signal?.throwIfAborted();
       lastError = error;
       onProgress?.(uploadProgress(completedBytes, totalBytes));
     }
@@ -136,7 +145,7 @@ function uploadTarget(
 ) {
   return new Promise<string | null>((resolve, reject) => {
     if (signal?.aborted) {
-      reject(cancelledError());
+      reject(signal.reason);
       return;
     }
 
@@ -161,15 +170,20 @@ function uploadTarget(
     });
     xhr.addEventListener("abort", () => {
       finish();
-      reject(cancelledError());
+      reject(signal?.reason ?? new DOMException("Upload aborted", "AbortError"));
     });
 
     signal?.addEventListener("abort", abort, { once: true });
-    xhr.open(target.method, target.url);
-    for (const [key, value] of Object.entries(target.headers ?? {})) {
-      xhr.setRequestHeader(key, value);
+    try {
+      xhr.open(target.method, target.url);
+      for (const [key, value] of Object.entries(target.headers ?? {})) {
+        xhr.setRequestHeader(key, value);
+      }
+      xhr.send(body);
+    } catch (error) {
+      finish();
+      reject(error);
     }
-    xhr.send(body);
   });
 }
 
@@ -179,12 +193,4 @@ function uploadProgress(loaded: number, total: number): UploadProgress {
     total,
     percent: total > 0 ? Math.round((loaded / total) * 100) : 0,
   };
-}
-
-function throwIfCancelled(signal?: AbortSignal) {
-  if (signal?.aborted) throw cancelledError();
-}
-
-function cancelledError() {
-  return new Error("Upload cancelled.");
 }

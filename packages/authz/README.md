@@ -3,16 +3,14 @@
 Resource permissions: `none < view < edit`.
 
 ```ts
-import { can, requirePermission } from "@woodleighschool/authz";
+import { can, canAll } from "@woodleighschool/authz";
 
 const permissions = { records: "view" } as const;
 can(permissions, "records", "edit"); // false
-requirePermission(permissions, "records", "view");
+canAll(permissions, [{ resource: "records", access: "view" }]); // true
 ```
 
-`canAll` and `requirePermissions` check every requirement. Failed assertions throw `ForbiddenError`; applications decide how to respond or redirect.
-
-`filterNavigation` filters trees with optional `permission`, `to`, `disabled` and `items` fields, retaining application metadata. `firstAccessibleTarget` finds the first permitted destination.
+`canAll` checks every requirement. `permissionLevel` converts an untrusted string into a known access level. Applications own responses to denied access, navigation filtering, route guards and query integration.
 
 ## React
 

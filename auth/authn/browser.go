@@ -1,22 +1,20 @@
-package browser
+package authn
 
 import (
 	"errors"
 	"net/http"
 	"net/url"
-
-	"github.com/woodleighschool/goodies/auth/authn"
 )
 
 // SSOStart redirects to the configured identity provider using the loaded session.
-func (b *Service) SSOStart(w http.ResponseWriter, r *http.Request) {
-	if !b.service.SSOEnabled() {
+func (s *Service) SSOStart(w http.ResponseWriter, r *http.Request) {
+	if !s.SSOEnabled() {
 		http.Error(w, "sso not configured", http.StatusNotFound)
 		return
 	}
-	authURL, err := b.service.BeginSSO(r.Context())
+	authURL, err := s.beginSSO(r.Context())
 	if err != nil {
-		b.logger.ErrorContext(r.Context(), "oidc start failed", "operation", "oidc-start", "err", err)
+		s.logger.ErrorContext(r.Context(), "oidc start failed", "operation", "oidc-start", "err", err)
 		http.Error(w, "sso sign-in failed", http.StatusInternalServerError)
 		return
 	}
@@ -24,51 +22,51 @@ func (b *Service) SSOStart(w http.ResponseWriter, r *http.Request) {
 }
 
 // SSOCallback verifies the callback and admits the identity before creating a session.
-func (b *Service) SSOCallback(w http.ResponseWriter, r *http.Request) {
+func (s *Service) SSOCallback(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	if providerErr := query.Get("error"); providerErr != "" {
-		b.redirectSSOError(w, r, providerErr)
+		s.redirectSSOError(w, r, providerErr)
 		return
 	}
 	state, code := query.Get("state"), query.Get("code")
 	if state == "" || code == "" {
-		b.redirectSSOError(w, r, "missing state or code")
+		s.redirectSSOError(w, r, "missing state or code")
 		return
 	}
-	principal, err := b.service.CompleteSSO(r.Context(), state, code)
+	principal, err := s.completeSSO(r.Context(), state, code)
 	if err == nil {
-		err = b.startSession(r.Context(), principal)
+		err = s.startSession(r.Context(), principal.ID)
 	}
 	if err != nil {
 		message := oidcUserMessage(err)
 		if message == "sso sign-in failed" {
-			b.logger.ErrorContext(r.Context(), "oidc callback failed", "operation", "oidc-callback", "err", err)
+			s.logger.ErrorContext(r.Context(), "oidc callback failed", "operation", "oidc-callback", "err", err)
 		}
-		b.redirectSSOError(w, r, message)
+		s.redirectSSOError(w, r, message)
 		return
 	}
-	http.Redirect(w, r, b.successRedirect, http.StatusFound)
+	http.Redirect(w, r, s.successRedirect, http.StatusFound)
 }
 
 func oidcUserMessage(err error) string {
 	switch {
-	case errors.Is(err, authn.ErrSSOStateMismatch):
+	case errors.Is(err, ErrSSOStateMismatch):
 		return "sso state mismatch; try again"
-	case errors.Is(err, authn.ErrSSONonceMismatch):
+	case errors.Is(err, ErrSSONonceMismatch):
 		return "sso nonce mismatch; try again"
-	case errors.Is(err, authn.ErrSSOUnknownUser), errors.Is(err, authn.ErrNotAuthenticated):
+	case errors.Is(err, ErrSSOUnknownUser), errors.Is(err, ErrNotAuthenticated):
 		return "no account for this identity"
-	case errors.Is(err, authn.ErrSSOEmailClaimEmpty):
+	case errors.Is(err, ErrSSOEmailClaimEmpty):
 		return "identity provider returned no email"
 	default:
 		return "sso sign-in failed"
 	}
 }
 
-func (b *Service) redirectSSOError(w http.ResponseWriter, r *http.Request, message string) {
-	target, err := url.Parse(b.failureRedirect)
+func (s *Service) redirectSSOError(w http.ResponseWriter, r *http.Request, message string) {
+	target, err := url.Parse(s.failureRedirect)
 	if err != nil {
-		b.logger.ErrorContext(r.Context(), "invalid login redirect", "operation", "oidc-callback", "err", err)
+		s.logger.ErrorContext(r.Context(), "invalid login redirect", "operation", "oidc-callback", "err", err)
 		http.Error(w, "sso sign-in failed", http.StatusInternalServerError)
 		return
 	}

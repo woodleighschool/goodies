@@ -1,6 +1,7 @@
 package authhuma
 
 import (
+	"context"
 	"log/slog"
 	"maps"
 	"net/http"
@@ -8,12 +9,11 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/woodleighschool/goodies/auth/authn"
 	"github.com/woodleighschool/goodies/auth/authz"
-	"github.com/woodleighschool/goodies/auth/internal/httpauth"
 )
 
 // ResourceAPI applies the conventional view-for-reads, edit-for-writes policy
 // for one resource. Callers use [RequireAPI] for exceptions.
-func ResourceAPI(api huma.API, service authz.Authorizer, logger *slog.Logger, resource authz.Resource) *huma.Group {
+func ResourceAPI(api huma.API, service Authorizer, logger *slog.Logger, resource authz.Resource) *huma.Group {
 	group := huma.NewGroup(api)
 	group.UseModifier(func(op *huma.Operation, next func(*huma.Operation)) {
 		required := authz.View
@@ -28,7 +28,7 @@ func ResourceAPI(api huma.API, service authz.Authorizer, logger *slog.Logger, re
 }
 
 // RequireAPI applies fixed requirements to every operation registered on the group.
-func RequireAPI(api huma.API, service authz.Authorizer, logger *slog.Logger, requirements ...authz.Requirement) *huma.Group {
+func RequireAPI(api huma.API, service Authorizer, logger *slog.Logger, requirements ...authz.Requirement) *huma.Group {
 	group := huma.NewGroup(api)
 	group.UseModifier(func(op *huma.Operation, next func(*huma.Operation)) {
 		*op = RequireAll(api, service, logger, *op, requirements...)
@@ -40,7 +40,7 @@ func RequireAPI(api huma.API, service authz.Authorizer, logger *slog.Logger, req
 // Require decorates one protected operation with its explicit authz requirement.
 func Require(
 	api huma.API,
-	service authz.Authorizer, logger *slog.Logger,
+	service Authorizer, logger *slog.Logger,
 	resource authz.Resource,
 	required authz.Access,
 	op huma.Operation,
@@ -51,7 +51,7 @@ func Require(
 // RequireAll decorates one protected operation with every required permission.
 func RequireAll(
 	api huma.API,
-	service authz.Authorizer, logger *slog.Logger,
+	service Authorizer, logger *slog.Logger,
 	op huma.Operation,
 	requirements ...authz.Requirement,
 ) huma.Operation {
@@ -60,7 +60,7 @@ func RequireAll(
 
 func require(
 	api huma.API,
-	service authz.Authorizer, logger *slog.Logger,
+	service Authorizer, logger *slog.Logger,
 	op huma.Operation,
 	requirements ...authz.Requirement,
 ) huma.Operation {
@@ -85,7 +85,7 @@ func require(
 		}
 		next(ctx)
 	})
-	httpauth.DeclareErrorResponse(api, &op, http.StatusForbidden)
+	declareErrorResponse(api, &op, http.StatusForbidden)
 	return op
 }
 
@@ -109,4 +109,9 @@ func mergeExtensions(current map[string]any, extra map[string]any) map[string]an
 	}
 	maps.Copy(current, extra)
 	return current
+}
+
+// Authorizer checks the permissions required by an API operation.
+type Authorizer interface {
+	CanAll(context.Context, int64, ...authz.Requirement) (bool, error)
 }

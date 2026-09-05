@@ -1,5 +1,4 @@
-// Package httpauth shares authentication and authorization HTTP schema declarations.
-package httpauth
+package authhuma
 
 import (
 	"net/http"
@@ -9,8 +8,8 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 )
 
-// DeclareErrorResponse adds Huma's standard problem response for status.
-func DeclareErrorResponse(api huma.API, op *huma.Operation, status int) {
+// declareErrorResponse adds Huma's standard problem response for status.
+func declareErrorResponse(api huma.API, op *huma.Operation, status int) {
 	if op.Responses == nil {
 		op.Responses = map[string]*huma.Response{}
 	}

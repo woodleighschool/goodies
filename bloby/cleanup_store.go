@@ -3,6 +3,7 @@ package bloby
 import (
 	"context"
 	"errors"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -59,25 +60,36 @@ func (s *Service) sweepExpiredUploads(ctx context.Context) {
 	if err != nil && !errors.Is(err, context.Canceled) {
 		s.logger.WarnContext(ctx, "abandoned upload cleanup failed", "operation", "candidates", "err", err)
 	}
-	for _, key := range keys {
-		idText, _, ok := strings.Cut(strings.TrimPrefix(key, candidatePrefix), "/")
-		id, parseErr := strconv.ParseInt(idText, 10, 64)
-		if !ok || parseErr != nil {
+	for batch := range slices.Chunk(keys, uploadCleanupBatchSize) {
+		candidateIDs := make(map[string]int64, len(batch))
+		ids := make([]int64, 0, len(batch))
+		for _, key := range batch {
+			idText, _, ok := strings.Cut(strings.TrimPrefix(key, candidatePrefix), "/")
+			id, err := strconv.ParseInt(idText, 10, 64)
+			if ok && err == nil {
+				candidateIDs[key] = id
+				ids = append(ids, id)
+			}
+		}
+		if len(ids) == 0 {
 			continue
 		}
-		object, err := s.registry.GetByID(ctx, id)
-		if err == nil && (!object.Available() || object.Key() == key) {
+		objects, err := s.registry.ListByIDs(ctx, ids)
+		if err != nil {
+			if !errors.Is(err, context.Canceled) {
+				s.logger.WarnContext(ctx, "candidate cleanup could not resolve objects", "err", err)
+			}
 			continue
 		}
-		if err != nil && !errors.Is(err, ErrNotFound) {
-			s.logger.WarnContext(ctx, "candidate cleanup could not resolve object", "object_id", id, "err", err)
-			continue
-		}
-		if err := s.backend.Delete(ctx, key); err != nil && !errors.Is(err, context.Canceled) {
-			s.logger.WarnContext(ctx, "candidate cleanup failed", "key", key, "err", err)
+		for key, id := range candidateIDs {
+			if object, ok := objects[id]; ok && (!object.Available() || object.Key() == key) {
+				continue
+			}
+			if err := s.backend.Delete(ctx, key); err != nil && !errors.Is(err, context.Canceled) {
+				s.logger.WarnContext(ctx, "candidate cleanup failed", "key", key, "err", err)
+			}
 		}
 	}
-
 }
 
 func pendingUploadMaxAge(transferTTL time.Duration) time.Duration {

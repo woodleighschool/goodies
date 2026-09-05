@@ -99,22 +99,19 @@ func (r *memoryRegistry) RefreshPending(_ context.Context, id int64) (*Object, e
 	return object, nil
 }
 
-func (r *memoryRegistry) RecordMultipartUploadID(_ context.Context, id int64, uploadID string) (string, bool, error) {
+func (r *memoryRegistry) RecordMultipartUploadID(_ context.Context, id int64, uploadID string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	object, err := r.get(id)
 	if err != nil {
-		return "", false, err
+		return err
 	}
-	if object.Available() {
-		return "", false, ErrInvalidInput
-	}
-	if object.MultipartUploadID != nil {
-		return *object.MultipartUploadID, false, nil
+	if object.Available() || object.MultipartUploadID != nil {
+		return ErrNotFound
 	}
 	object.MultipartUploadID = &uploadID
 	r.objects[id] = *object
-	return uploadID, true, nil
+	return nil
 }
 
 func (r *memoryRegistry) ClearMultipartUploadID(_ context.Context, id int64, uploadID string) error {
@@ -146,6 +143,9 @@ func (r *memoryRegistry) Delete(_ context.Context, id int64) (*Object, error) {
 func (r *memoryRegistry) ListByIDs(_ context.Context, ids []int64) (map[int64]Object, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.getFailure != nil {
+		return nil, r.getFailure
+	}
 	result := make(map[int64]Object)
 	for _, id := range ids {
 		if object, err := r.get(id); err == nil {
