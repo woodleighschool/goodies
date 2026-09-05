@@ -33,7 +33,7 @@ func New(pool *pgxpool.Pool) *Store {
 
 func (s *Store) CreatePending(ctx context.Context, prefix, filename string) (*bloby.Object, error) {
 	const sql = `INSERT INTO storage_objects (prefix, filename) VALUES (@prefix, @filename) RETURNING ` + objectColumnsSQL
-	object, err := getOne[bloby.Object](ctx, s.pool, sql, pgx.NamedArgs{"prefix": prefix, "filename": filename})
+	object, err := s.getObject(ctx, sql, pgx.NamedArgs{"prefix": prefix, "filename": filename})
 	if err != nil {
 		return nil, mutationError(err)
 	}
@@ -46,7 +46,7 @@ SET size_bytes = @size_bytes, sha256 = @sha256, content_type = @content_type, st
     available_at = now(), updated_at = now()
 WHERE id = @id AND available_at IS NULL AND expired_at IS NULL
 RETURNING ` + objectColumnsSQL
-	object, err := getOne[bloby.Object](ctx, s.pool, sql, pgx.NamedArgs{
+	object, err := s.getObject(ctx, sql, pgx.NamedArgs{
 		"id": id, "size_bytes": &sizeBytes, "sha256": &sha256sum, "content_type": contentType, "storage_key": storageKey,
 	})
 	if errors.Is(err, bloby.ErrNotFound) {
@@ -67,33 +67,24 @@ RETURNING ` + objectColumnsSQL
 func (s *Store) RefreshPending(ctx context.Context, id int64) (*bloby.Object, error) {
 	const sql = `UPDATE storage_objects SET updated_at = now()
 WHERE id = $1 AND available_at IS NULL AND expired_at IS NULL RETURNING ` + objectColumnsSQL
-	object, err := getOne[bloby.Object](ctx, s.pool, sql, id)
+	object, err := s.getObject(ctx, sql, id)
 	if err != nil {
 		return nil, mutationError(err)
 	}
 	return &object, nil
 }
 
-func (s *Store) RecordMultipartUploadID(ctx context.Context, id int64, uploadID string) (string, bool, error) {
-	var recorded string
-	err := s.pool.QueryRow(ctx, `UPDATE storage_objects
+func (s *Store) RecordMultipartUploadID(ctx context.Context, id int64, uploadID string) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE storage_objects
 SET multipart_upload_id = $2, updated_at = now()
-WHERE id = $1 AND available_at IS NULL AND expired_at IS NULL AND multipart_upload_id IS NULL
-RETURNING multipart_upload_id`, id, uploadID).Scan(&recorded)
-	if err == nil {
-		return recorded, true, nil
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return "", false, mutationError(err)
-	}
-	object, err := s.GetByID(ctx, id)
+WHERE id = $1 AND available_at IS NULL AND expired_at IS NULL AND multipart_upload_id IS NULL`, id, uploadID)
 	if err != nil {
-		return "", false, err
+		return mutationError(err)
 	}
-	if object.MultipartUploadID != nil {
-		return *object.MultipartUploadID, false, nil
+	if tag.RowsAffected() == 0 {
+		return bloby.ErrNotFound
 	}
-	return "", false, fmt.Errorf("%w: storage object is already finalized", bloby.ErrInvalidInput)
+	return nil
 }
 
 func (s *Store) ClearMultipartUploadID(ctx context.Context, id int64, uploadID string) error {
@@ -117,7 +108,7 @@ WHERE id = $1 AND expired_at IS NULL AND multipart_upload_id = $2`, id, uploadID
 }
 
 func (s *Store) GetByID(ctx context.Context, id int64) (*bloby.Object, error) {
-	object, err := getOne[bloby.Object](ctx, s.pool, objectSelectSQL+" WHERE id = $1 AND expired_at IS NULL", id)
+	object, err := s.getObject(ctx, objectSelectSQL+" WHERE id = $1 AND expired_at IS NULL", id)
 	if err != nil {
 		return nil, getError(err)
 	}
@@ -158,7 +149,7 @@ ORDER BY created_at DESC, id DESC LIMIT $2 OFFSET $3`, prefix, options.Limit, op
 
 func (s *Store) Delete(ctx context.Context, id int64) (*bloby.Object, error) {
 	const sql = `DELETE FROM storage_objects WHERE id = $1 AND expired_at IS NULL RETURNING ` + objectColumnsSQL
-	object, err := getOne[bloby.Object](ctx, s.pool, sql, id)
+	object, err := s.getObject(ctx, sql, id)
 	if err != nil {
 		return nil, deleteConflict(err, "storage object is still referenced")
 	}
@@ -194,21 +185,13 @@ func (s *Store) DeleteExpiredPending(ctx context.Context, id int64) error {
 	return nil
 }
 
-type queryer interface {
-	Query(context.Context, string, ...any) (pgx.Rows, error)
-}
-
-func getOne[T any](ctx context.Context, q queryer, sql string, args ...any) (T, error) {
-	var zero T
-	rows, err := q.Query(ctx, sql, args...)
+func (s *Store) getObject(ctx context.Context, sql string, args ...any) (bloby.Object, error) {
+	rows, err := s.pool.Query(ctx, sql, args...)
 	if err != nil {
-		return zero, err
+		return bloby.Object{}, err
 	}
-	row, err := pgx.CollectExactlyOneRow(rows, pgx.RowToStructByPos[T])
-	if err != nil {
-		return zero, getError(err)
-	}
-	return row, nil
+	object, err := pgx.CollectExactlyOneRow(rows, pgx.RowToStructByPos[bloby.Object])
+	return object, getError(err)
 }
 
 func sqlState(err error) string {

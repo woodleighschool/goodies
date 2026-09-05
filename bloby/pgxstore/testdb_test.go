@@ -9,8 +9,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/jackc/pgx/v5/stdlib"
-	"github.com/pressly/goose/v3"
 	"github.com/woodleighschool/goodies/bloby/pgxstore"
 )
 
@@ -18,10 +16,14 @@ const databaseOperationTimeout = 10 * time.Second
 
 func openTestDatabase(t testing.TB) (*pgxpool.Pool, context.Context) {
 	t.Helper()
-	return openTestDatabaseAtVersion(t, pgxstore.Version)
+	db, ctx := openEmptyTestDatabase(t)
+	if err := pgxstore.Migrate(ctx, db); err != nil {
+		t.Fatalf("apply Bloby migrations: %v", err)
+	}
+	return db, ctx
 }
 
-func openTestDatabaseAtVersion(t testing.TB, version int64) (*pgxpool.Pool, context.Context) {
+func openEmptyTestDatabase(t testing.TB) (*pgxpool.Pool, context.Context) {
 	t.Helper()
 
 	databaseURL := os.Getenv("BLOBY_TEST_DATABASE_URL")
@@ -55,15 +57,5 @@ func openTestDatabaseAtVersion(t testing.TB, version int64) (*pgxpool.Pool, cont
 		t.Fatal(err)
 	}
 	t.Cleanup(db.Close)
-	sqlDB := stdlib.OpenDBFromPool(db)
-	defer func() { _ = sqlDB.Close() }()
-	migrations, err := goose.NewProvider(goose.DialectPostgres, sqlDB, pgxstore.Migrations(),
-		goose.WithTableName("bloby_migrations"), goose.WithLogger(goose.NopLogger()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := migrations.UpTo(t.Context(), version); err != nil {
-		t.Fatalf("apply Bloby migrations: %v", err)
-	}
 	return db, t.Context()
 }

@@ -18,7 +18,7 @@ func TestBeginSSOBindsStateAndNonceToSession(t *testing.T) {
 		}},
 	}
 
-	authURL, err := service.BeginSSO(ctx)
+	authURL, err := service.beginSSO(ctx)
 	if err != nil {
 		t.Fatalf("BeginSSO() error = %v", err)
 	}
@@ -44,7 +44,7 @@ func TestCompleteSSORejectsMissingSessionNonce(t *testing.T) {
 		sessions: sessions,
 		oidc:     &oidcProvider{},
 	}
-	if _, err := service.CompleteSSO(ctx, "expected-state", "code"); !errors.Is(err, ErrSSONonceMismatch) {
+	if _, err := service.completeSSO(ctx, "expected-state", "code"); !errors.Is(err, ErrSSONonceMismatch) {
 		t.Fatalf("CompleteSSO error = %v, want %v", err, ErrSSONonceMismatch)
 	}
 }

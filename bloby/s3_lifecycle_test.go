@@ -1,6 +1,7 @@
 package bloby
 
 import (
+	"context"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -267,6 +268,29 @@ func TestS3DirectUploadReplayCannotChangePublishedObject(t *testing.T) {
 	if fixture.conditionalGets != 1 {
 		t.Fatalf("pinned small-object reads=%d", fixture.conditionalGets)
 	}
+}
+
+func TestS3BeginAbortsMultipartWhenRegistrationFails(t *testing.T) {
+	service, fixture := newS3Fixture(t)
+	failure := errors.New("registry unavailable")
+	service.registry = multipartRegistrationFailure{Registry: service.registry, err: failure}
+	if _, _, err := service.Begin(t.Context(), "documents/reports", "report.txt", s3MultipartThreshold+1); !errors.Is(err, failure) {
+		t.Fatalf("begin error = %v, want registry failure", err)
+	}
+	fixture.mu.Lock()
+	defer fixture.mu.Unlock()
+	if len(fixture.uploads) != 0 {
+		t.Fatalf("failed registration retained %d provider uploads", len(fixture.uploads))
+	}
+}
+
+type multipartRegistrationFailure struct {
+	Registry
+	err error
+}
+
+func (r multipartRegistrationFailure) RecordMultipartUploadID(context.Context, int64, string) error {
+	return r.err
 }
 
 func TestS3MultipartCompletionAndReplay(t *testing.T) {

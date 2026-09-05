@@ -7,18 +7,6 @@ import (
 	"time"
 )
 
-type deliveryMode uint8
-
-const (
-	deliveryStream deliveryMode = iota
-	deliveryRedirect
-)
-
-// Deliverer sends an authorized storage object to an HTTP client.
-type Deliverer interface {
-	Deliver(w http.ResponseWriter, r *http.Request, object Object, opts DeliveryOptions) error
-}
-
 // DeliveryOptions carries response policy owned by the resource exposing an
 // object. Object identity and representation metadata come from Object.
 type DeliveryOptions struct {
@@ -37,21 +25,21 @@ func (d *Service) Deliver(
 		w.WriteHeader(http.StatusNotFound)
 		return ErrNotFound
 	}
-	if d.backend.deliveryMode() == deliveryRedirect {
-		url, err := d.DownloadURL(r.Context(), object, 0, opts)
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			return err
-		}
-		http.Redirect(w, r, url, http.StatusFound)
-		return nil
+	if file, ok := d.backend.(*fileStore); ok {
+		return file.serveKey(w, r, object.Key(), serveOptions{
+			ContentType:  object.ContentType,
+			Filename:     object.Filename,
+			CacheControl: opts.CacheControl,
+			ETag:         object.ETag(),
+		})
 	}
-	return serveKey(w, r, d.backend, object.Key(), serveOptions{
-		ContentType:  object.ContentType,
-		Filename:     object.Filename,
-		CacheControl: opts.CacheControl,
-		ETag:         object.ETag(),
-	})
+	url, err := d.DownloadURL(r.Context(), object, 0, opts)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return err
+	}
+	http.Redirect(w, r, url, http.StatusFound)
+	return nil
 }
 
 // DownloadURL mints a backend-appropriate direct read URL for object.
@@ -71,7 +59,7 @@ func (d *Service) DownloadURL(
 }
 
 // Open reads the sealed bytes of an authorized available object.
-func (s *Service) Open(ctx context.Context, object Object) (io.ReadSeekCloser, error) {
+func (s *Service) Open(ctx context.Context, object Object) (io.ReadCloser, error) {
 	if !object.Available() {
 		return nil, ErrNotFound
 	}

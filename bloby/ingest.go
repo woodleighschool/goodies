@@ -37,7 +37,7 @@ func (s *Service) Begin(
 		return nil, UploadAction{}, errors.Join(err, s.Delete(ctx, object.ID, prefix))
 	}
 	if action.Strategy == StrategyMultipart {
-		if err := s.createMultipart(ctx, object.ID, prefix); err != nil {
+		if err := s.createMultipart(ctx, object); err != nil {
 			return nil, UploadAction{}, errors.Join(err, s.Delete(ctx, object.ID, prefix))
 		}
 	}
@@ -184,41 +184,19 @@ func (s *Service) deleteStaging(ctx context.Context, object *Object) {
 	}
 }
 
-func (s *Service) createMultipart(
-	ctx context.Context,
-	objectID int64,
-	prefix string,
-) error {
-	object, backend, err := s.multipartObject(ctx, objectID, prefix)
+func (s *Service) createMultipart(ctx context.Context, object *Object) error {
+	backend, err := s.multipartBackend()
 	if err != nil {
 		return err
-	}
-	if object.MultipartUploadID != nil {
-		return nil
-	}
-	objectExists, err := s.objectExists(ctx, object.stagingKey())
-	if err != nil {
-		return err
-	}
-	if objectExists {
-		return fmt.Errorf(
-			"%w: multipart upload is already completed and ready to finalize",
-			ErrInvalidInput,
-		)
 	}
 	uploadID, err := backend.CreateMultipartUpload(ctx, object.stagingKey())
 	if err != nil {
 		return err
 	}
-	_, created, err := s.registry.RecordMultipartUploadID(ctx, object.ID, uploadID)
-	if err != nil {
-		return errors.Join(err, backend.AbortMultipartUpload(ctx, object.stagingKey(), uploadID))
-	}
-	if !created {
-		abortErr := backend.AbortMultipartUpload(ctx, object.stagingKey(), uploadID)
-		if abortErr != nil && !errors.Is(abortErr, ErrMultipartUploadNotFound) {
-			return abortErr
-		}
+	if err := s.registry.RecordMultipartUploadID(ctx, object.ID, uploadID); err != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), objectCleanupTimeout)
+		defer cancel()
+		return errors.Join(err, backend.AbortMultipartUpload(cleanupCtx, object.stagingKey(), uploadID))
 	}
 	return nil
 }

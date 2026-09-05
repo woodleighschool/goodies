@@ -44,7 +44,7 @@ type Registry interface {
 	MarkAvailable(ctx context.Context, id, sizeBytes int64, contentType, sha256, storageKey string) (*Object, error)
 	// RefreshPending only touches active pending rows; all others return ErrNotFound.
 	RefreshPending(ctx context.Context, id int64) (*Object, error)
-	RecordMultipartUploadID(ctx context.Context, id int64, uploadID string) (recorded string, created bool, err error)
+	RecordMultipartUploadID(ctx context.Context, id int64, uploadID string) error
 	ClearMultipartUploadID(ctx context.Context, id int64, uploadID string) error
 	GetByID(ctx context.Context, id int64) (*Object, error)
 	ListByIDs(ctx context.Context, ids []int64) (map[int64]Object, error)

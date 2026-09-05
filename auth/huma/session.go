@@ -8,7 +8,6 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/woodleighschool/goodies/auth/authn"
-	"github.com/woodleighschool/goodies/auth/browser"
 )
 
 const sessionPath = "/api/session"
@@ -29,15 +28,16 @@ type sessionUserOutput struct {
 type sessionCreateInput struct {
 	Body struct {
 		Email    string `json:"email" format:"email"`
-		Password string `json:"password" minLength:"1"`
+		Password string `json:"password"`
 	}
 }
 
 // RegisterSessions mounts GET, POST, and DELETE /api/session. The caller supplies
-// APIs with optional authentication, password throttling, and required
-// authentication respectively, with session loading on each surface.
-// A nil browser service may register schema-only APIs whose handlers are never called.
-func RegisterSessions(session, password, protected huma.API, b *browser.Service, logger *slog.Logger, tag string) {
+// APIs with optional authentication, password throttling, and unauthenticated
+// logout respectively. Each surface must load sessions and protect unsafe methods
+// against cross-origin requests; logout must not depend on current admission.
+// A nil authentication service may register schema-only APIs whose handlers are never called.
+func RegisterSessions(session, password, logout huma.API, b *authn.Service, logger *slog.Logger, tag string) {
 	huma.Register(session, huma.Operation{
 		OperationID: "get-session", Method: http.MethodGet, Path: sessionPath,
 		Tags: []string{tag}, Summary: "Get session",
@@ -67,7 +67,7 @@ func RegisterSessions(session, password, protected huma.API, b *browser.Service,
 			Schema: &huma.Schema{Type: "integer"},
 		},
 	}
-	huma.Register(protected, huma.Operation{
+	huma.Register(logout, huma.Operation{
 		OperationID: "delete-session", Method: http.MethodDelete, Path: sessionPath,
 		Tags: []string{tag}, Summary: "Delete session", DefaultStatus: http.StatusNoContent,
 	}, func(ctx context.Context, _ *struct{}) (*struct{}, error) {

@@ -29,8 +29,8 @@ func (s *Service) RevokeAPIKey(ctx context.Context, principalID int64) error {
 	return nil
 }
 
-// AuthenticateAPIKey resolves one API key without consulting a browser session.
-func (s *Service) AuthenticateAPIKey(ctx context.Context, token string) (*Principal, error) {
+// authenticateAPIKey resolves one API key without consulting a browser session.
+func (s *Service) authenticateAPIKey(ctx context.Context, token string) (*Principal, error) {
 	if token == "" {
 		return nil, ErrNotAuthenticated
 	}

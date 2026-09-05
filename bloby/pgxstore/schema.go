@@ -1,23 +1,47 @@
 package pgxstore
 
 import (
+	"context"
 	"embed"
+	"fmt"
 	"io/fs"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"
+	"github.com/pressly/goose/v3"
+	"github.com/pressly/goose/v3/lock"
 )
 
-// Version is the latest migration supplied by this package.
-const Version int64 = 2
+const migrationLockID int64 = 0x626c6f6279 // "bloby"
 
 //go:embed migrations/*.sql
 var migrationFiles embed.FS
 
-// Migrations returns ordered Goose SQL migrations for Bloby-owned tables.
-// Applications choose when and up to which version to apply them, using a
-// separate Goose version table for this migration history.
-func Migrations() fs.FS {
+// Migrate applies the schema required by this version of Bloby. Applications
+// call it before applying migrations that reference storage objects. Concurrent
+// calls are serialized, and the pool remains open when Migrate returns.
+func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	migrations, err := fs.Sub(migrationFiles, "migrations")
 	if err != nil {
-		panic(err)
+		return fmt.Errorf("bloby: open migrations: %w", err)
 	}
-	return migrations
+	locker, err := lock.NewPostgresSessionLocker(lock.WithLockID(migrationLockID))
+	if err != nil {
+		return fmt.Errorf("bloby: create migration lock: %w", err)
+	}
+	db := stdlib.OpenDBFromPool(pool)
+	defer func() { _ = db.Close() }()
+	provider, err := goose.NewProvider(
+		goose.DialectPostgres, db, migrations,
+		goose.WithTableName("bloby_migrations"),
+		goose.WithLogger(goose.NopLogger()),
+		goose.WithSessionLocker(locker),
+	)
+	if err != nil {
+		return fmt.Errorf("bloby: create migration provider: %w", err)
+	}
+	if _, err := provider.Up(ctx); err != nil {
+		return fmt.Errorf("bloby: apply migrations: %w", err)
+	}
+	return nil
 }

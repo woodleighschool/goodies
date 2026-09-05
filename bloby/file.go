@@ -14,8 +14,6 @@ import (
 	"slices"
 	"strings"
 	"time"
-
-	"github.com/woodleighschool/goodies/bloby/internal/capability"
 )
 
 // fileStore keeps blobs under a local directory. Keys map to paths beneath root.
@@ -80,24 +78,32 @@ func (s *fileStore) resolve(key string) (string, error) {
 	return path, nil
 }
 
-func (s *fileStore) Open(_ context.Context, key string) (io.ReadSeekCloser, objectInfo, error) {
-	path, err := s.resolve(key)
+func (s *fileStore) Open(_ context.Context, key string) (io.ReadCloser, objectInfo, error) {
+	f, err := s.openFile(key)
 	if err != nil {
 		return nil, objectInfo{}, err
-	}
-	f, err := os.Open(path) //nolint:gosec // resolve confines the path to the configured storage root.
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, objectInfo{}, ErrObjectNotFound
-	}
-	if err != nil {
-		return nil, objectInfo{}, fmt.Errorf("open %q: %w", key, err)
 	}
 	info, err := f.Stat()
 	if err != nil {
 		_ = f.Close()
 		return nil, objectInfo{}, fmt.Errorf("stat %q: %w", key, err)
 	}
-	return fileObjectReader{ReadSeeker: f, Closer: f}, objectInfo{Size: info.Size()}, nil
+	return f, objectInfo{Size: info.Size()}, nil
+}
+
+func (s *fileStore) openFile(key string) (*os.File, error) {
+	path, err := s.resolve(key)
+	if err != nil {
+		return nil, err
+	}
+	f, err := os.Open(path) //nolint:gosec // resolve confines the path to the configured storage root.
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, ErrObjectNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("open %q: %w", key, err)
+	}
+	return f, nil
 }
 
 func (s *fileStore) Put(_ context.Context, key string, r io.Reader, _ putOptions) error {
@@ -116,7 +122,7 @@ func (s *fileStore) Put(_ context.Context, key string, r io.Reader, _ putOptions
 		return fmt.Errorf("create temp for %q: %w", key, err)
 	}
 	tmpName := tmp.Name()
-	defer func() { _ = os.Remove(tmpName) }() //nolint:gosec // CreateTemp returned a path inside the resolved storage directory.
+	defer func() { _ = os.Remove(tmpName) }()
 	if _, err := io.Copy(tmp, r); err != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("write %q: %w", key, err)
@@ -148,18 +154,14 @@ func (s *fileStore) Delete(_ context.Context, key string) error {
 	return nil
 }
 
-func (*fileStore) deliveryMode() deliveryMode {
-	return deliveryStream
-}
-
 func (s *fileStore) PresignGet(
 	_ context.Context,
 	key string,
 	ttl time.Duration,
 	opts getOptions,
 ) (string, error) {
-	return s.blobURL(blobCapabilityClaims{
-		Op:          capability.OpGet,
+	return s.blobURL(capabilityClaims{
+		Op:          capabilityGet,
 		Key:         key,
 		Exp:         time.Now().Add(s.expires(ttl)).Unix(),
 		ContentType: opts.ContentType,
@@ -171,8 +173,8 @@ func (s *fileStore) PresignPut(
 	key string,
 	ttl time.Duration,
 ) (UploadTarget, error) {
-	url, err := s.blobURL(blobCapabilityClaims{
-		Op:  capability.OpPut,
+	url, err := s.blobURL(capabilityClaims{
+		Op:  capabilityPut,
 		Key: key,
 		Exp: time.Now().Add(s.expires(ttl)).Unix(),
 	})
@@ -185,11 +187,8 @@ func (s *fileStore) PresignPut(
 	}, nil
 }
 
-func (s *fileStore) blobURL(claims blobCapabilityClaims) (string, error) {
-	token, err := capability.Sign(s.capabilityKey, claims)
-	if err != nil {
-		return "", err
-	}
+func (s *fileStore) blobURL(claims capabilityClaims) (string, error) {
+	token := signCapability(s.capabilityKey, claims)
 	blobURL, err := url.Parse(strings.TrimRight(s.baseURL, "/") + "/storage/" + escapePath(claims.Key))
 	if err != nil {
 		return "", err
@@ -210,14 +209,6 @@ func escapePath(value string) string {
 
 func (s *fileStore) expires(ttl time.Duration) time.Duration {
 	return ttlOrDefault(ttl, s.ttl)
-}
-
-// fileObjectReader exposes only the object-reader contract.
-// Returning the concrete file would expose optional interfaces that allow net/http
-// to select platform sendfile paths, which can break HTTP framing on some stacks.
-type fileObjectReader struct {
-	io.ReadSeeker
-	io.Closer
 }
 
 // seal pins the staging inode without replacing an existing published file.

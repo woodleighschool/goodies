@@ -80,13 +80,13 @@ func (s *principalStore) ClearAPIKey(_ context.Context, id int64) error {
 func TestSessionLifecycle(t *testing.T) {
 	sessions, ctx := loadedSession(t)
 	store := &principalStore{principal: &Principal{ID: 42}}
-	service := &Service{principals: store, sessions: sessions}
+	service := &Service{principals: store, sessions: sessions, admit: allowPrincipal}
 	sessions.Put(ctx, "anonymous-data", "value")
 	oldToken, _, err := sessions.Commit(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := service.StartSession(ctx, 42); err != nil {
+	if err := service.startSession(ctx, 42); err != nil {
 		t.Fatal(err)
 	}
 	token, _, err := sessions.Commit(ctx)
@@ -100,14 +100,14 @@ func TestSessionLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.CurrentPrincipal(oldCtx); !errors.Is(err, ErrNotAuthenticated) {
+	if _, err := service.currentPrincipal(oldCtx); !errors.Is(err, ErrNotAuthenticated) {
 		t.Fatalf("old session: %v", err)
 	}
 	ctx, err = sessions.Load(t.Context(), token)
 	if err != nil {
 		t.Fatal(err)
 	}
-	principal, err := service.CurrentPrincipal(ctx)
+	principal, err := service.currentPrincipal(ctx)
 	if err != nil || principal.ID != 42 || store.id != 42 {
 		t.Fatalf("principal=%v error=%v", principal, err)
 	}
@@ -118,7 +118,7 @@ func TestSessionLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.CurrentPrincipal(ctx); !errors.Is(err, ErrNotAuthenticated) {
+	if _, err := service.currentPrincipal(ctx); !errors.Is(err, ErrNotAuthenticated) {
 		t.Fatalf("logged-out session: %v", err)
 	}
 }
@@ -137,7 +137,7 @@ func TestCurrentPrincipalDistinguishesMissingIdentityFromStoreFailure(t *testing
 			sessions, ctx := loadedSession(t)
 			sessions.Put(ctx, sessionUserIDKey, int64(42))
 			service := &Service{principals: &principalStore{err: tc.storeErr}, sessions: sessions}
-			if _, err := service.CurrentPrincipal(ctx); !errors.Is(err, tc.wantErr) {
+			if _, err := service.currentPrincipal(ctx); !errors.Is(err, tc.wantErr) {
 				t.Fatalf("error=%v", err)
 			}
 			if got := sessions.GetInt64(ctx, sessionUserIDKey); (got == 0) != tc.destroy {
@@ -149,8 +149,8 @@ func TestCurrentPrincipalDistinguishesMissingIdentityFromStoreFailure(t *testing
 
 func TestMissingPrincipalPreservesSessionRevocationFailure(t *testing.T) {
 	sessions, ctx := loadedSession(t)
-	service := &Service{principals: &principalStore{err: ErrPrincipalNotFound}, sessions: sessions}
-	if err := service.StartSession(ctx, 42); err != nil {
+	service := &Service{principals: &principalStore{err: ErrPrincipalNotFound}, sessions: sessions, admit: allowPrincipal}
+	if err := service.startSession(ctx, 42); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := sessions.Commit(ctx); err != nil {
@@ -158,7 +158,7 @@ func TestMissingPrincipalPreservesSessionRevocationFailure(t *testing.T) {
 	}
 	broken := errors.New("session store unavailable")
 	sessions.Store = failingDeleteStore{Store: sessions.Store, err: broken}
-	if _, err := service.CurrentPrincipal(ctx); !errors.Is(err, broken) {
+	if _, err := service.currentPrincipal(ctx); !errors.Is(err, broken) {
 		t.Fatalf("session revocation error = %v, want %v", err, broken)
 	}
 }
@@ -187,17 +187,17 @@ func TestAPIKeyRotationAndRevocation(t *testing.T) {
 	if old == store.key {
 		t.Fatal("rotation retained old key")
 	}
-	if _, err := service.AuthenticateAPIKey(t.Context(), old); !errors.Is(err, ErrNotAuthenticated) {
+	if _, err := service.authenticateAPIKey(t.Context(), old); !errors.Is(err, ErrNotAuthenticated) {
 		t.Fatalf("old key: %v", err)
 	}
-	if p, err := service.AuthenticateAPIKey(t.Context(), store.key); err != nil || p.ID != 42 {
+	if p, err := service.authenticateAPIKey(t.Context(), store.key); err != nil || p.ID != 42 {
 		t.Fatalf("new key: %v %v", p, err)
 	}
 	key := store.key
 	if err := service.RevokeAPIKey(t.Context(), 42); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.AuthenticateAPIKey(t.Context(), key); !errors.Is(err, ErrNotAuthenticated) {
+	if _, err := service.authenticateAPIKey(t.Context(), key); !errors.Is(err, ErrNotAuthenticated) {
 		t.Fatalf("revoked key: %v", err)
 	}
 	broken := errors.New("store unavailable")
@@ -207,7 +207,7 @@ func TestAPIKeyRotationAndRevocation(t *testing.T) {
 			t.Fatalf("store error: %v", err)
 		}
 	}
-	if _, err := service.AuthenticateAPIKey(t.Context(), "key"); !errors.Is(err, broken) {
+	if _, err := service.authenticateAPIKey(t.Context(), "key"); !errors.Is(err, broken) {
 		t.Fatalf("lookup error: %v", err)
 	}
 }
@@ -220,11 +220,11 @@ func TestPasswordAuthentication(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := &principalStore{identity: &PasswordIdentity{ID: 42, PasswordHash: hash}}
-	service, err := NewService(store, sessions)
+	service, err := New(t.Context(), store, sessions, Config{Admit: allowPrincipal})
 	if err != nil {
 		t.Fatal(err)
 	}
-	principal, err := service.AuthenticatePassword(ctx, LoginParams{Email: " person@example.invalid ", Password: password})
+	principal, err := service.authenticatePassword(ctx, LoginParams{Email: " person@example.invalid ", Password: password})
 	if err != nil || principal.ID != 42 || store.email != "person@example.invalid" {
 		t.Fatalf("principal=%v email=%q error=%v", principal, store.email, err)
 	}
@@ -241,24 +241,94 @@ func TestPasswordAuthentication(t *testing.T) {
 			if tc.missing {
 				store.err = fmt.Errorf("lookup: %w", ErrPrincipalNotFound)
 			}
-			started := time.Now()
-			p, err := service.AuthenticatePassword(ctx, LoginParams{Password: tc.password})
+			p, err := service.authenticatePassword(ctx, LoginParams{Password: tc.password})
 			if p != nil || !errors.Is(err, ErrInvalidCredentials) {
 				t.Fatalf("principal=%v error=%v", p, err)
 			}
-			if time.Since(started) < minimumCredentialFailureDuration {
-				t.Fatal("credential failure was not padded")
-			}
+
 		})
 	}
 	broken := errors.New("store unavailable")
 	store.err = broken
-	if _, err := service.AuthenticatePassword(ctx, LoginParams{}); !errors.Is(err, broken) {
+	if _, err := service.authenticatePassword(ctx, LoginParams{}); !errors.Is(err, broken) {
 		t.Fatalf("store failure: %v", err)
 	}
 	store.err = nil
 	store.identity.PasswordHash = "malformed"
-	if p, err := service.AuthenticatePassword(ctx, LoginParams{}); p != nil || err == nil || errors.Is(err, ErrInvalidCredentials) {
+	if p, err := service.authenticatePassword(ctx, LoginParams{}); p != nil || err == nil || errors.Is(err, ErrInvalidCredentials) {
 		t.Fatalf("malformed hash: %v %v", p, err)
+	}
+}
+
+func allowPrincipal(context.Context, int64) (bool, error) { return true, nil }
+
+func TestAdmissionOwnsEveryCredentialPath(t *testing.T) {
+	const password = "synthetic-test-password"
+	hash, err := HashPassword(password)
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal := Principal{ID: 42, Email: "person@example.invalid", Name: "Synthetic User"}
+	store := &principalStore{principal: &principal, identity: &PasswordIdentity{Principal: principal, PasswordHash: hash}, key: "synthetic-key"}
+	sessions, ctx := loadedSession(t)
+	var admitted bool
+	var admissionErr error
+	service, err := New(ctx, store, sessions, Config{Admit: func(context.Context, int64) (bool, error) { return admitted, admissionErr }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Login(ctx, LoginParams{Email: principal.Email, Password: password}); !errors.Is(err, ErrNotAuthenticated) {
+		t.Fatalf("denied login=%v", err)
+	}
+	if sessions.GetInt64(ctx, sessionUserIDKey) != 0 {
+		t.Fatal("denied login started session")
+	}
+	admissionErr = errors.New("permission store unavailable")
+	if _, err := service.Login(ctx, LoginParams{Email: principal.Email, Password: password}); !errors.Is(err, admissionErr) {
+		t.Fatalf("failed login=%v", err)
+	}
+	admissionErr, admitted = nil, true
+	if _, err := service.Login(ctx, LoginParams{Email: principal.Email, Password: password}); err != nil {
+		t.Fatal(err)
+	}
+	for _, revoked := range []bool{false, true} {
+		admitted = !revoked
+		for _, header := range []string{"", "Bearer synthetic-key"} {
+			got, err := service.Authenticate(ctx, header)
+			if revoked {
+				if got != nil || !errors.Is(err, ErrNotAuthenticated) {
+					t.Fatalf("revoked %q principal=%v error=%v", header, got, err)
+				}
+			} else if err != nil || got.ID != principal.ID {
+				t.Fatalf("admitted %q principal=%v error=%v", header, got, err)
+			}
+		}
+	}
+}
+
+func TestNewRejectsMissingDependencies(t *testing.T) {
+	sessions, _ := loadedSession(t)
+	for _, tc := range []struct {
+		store    Store
+		sessions *scs.SessionManager
+		config   Config
+	}{
+		{nil, sessions, Config{Admit: allowPrincipal}}, {&principalStore{}, nil, Config{Admit: allowPrincipal}},
+	} {
+		if _, err := New(t.Context(), tc.store, tc.sessions, tc.config); err == nil {
+			t.Fatal("missing authentication dependency accepted")
+		}
+	}
+}
+
+func TestAuthenticationCanUseStoreEligibility(t *testing.T) {
+	sessions, ctx := loadedSession(t)
+	service, err := New(ctx, &principalStore{principal: &Principal{ID: 42}, key: "eligible-key"}, sessions, Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal, err := service.Authenticate(ctx, "Bearer eligible-key")
+	if err != nil || principal.ID != 42 {
+		t.Fatalf("store-eligible identity=%v error=%v", principal, err)
 	}
 }

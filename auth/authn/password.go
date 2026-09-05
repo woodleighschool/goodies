@@ -5,10 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 )
-
-const minimumCredentialFailureDuration = time.Second
 
 // LoginParams contains a local-login attempt.
 type LoginParams struct {
@@ -16,9 +13,8 @@ type LoginParams struct {
 	Password string
 }
 
-// AuthenticatePassword verifies local credentials without creating a session.
-func (s *Service) AuthenticatePassword(ctx context.Context, params LoginParams) (*Principal, error) {
-	started := time.Now()
+// authenticatePassword verifies local credentials without creating a session.
+func (s *Service) authenticatePassword(ctx context.Context, params LoginParams) (*Principal, error) {
 	identity, passwordHash, err := s.passwordLoginCandidate(ctx, strings.TrimSpace(params.Email))
 	if err != nil {
 		return nil, err
@@ -28,8 +24,6 @@ func (s *Service) AuthenticatePassword(ctx context.Context, params LoginParams) 
 		return nil, fmt.Errorf("verify password: %w", err)
 	}
 	if identity == nil || !valid {
-		// Padding only credential failures avoids leaking whether the identity exists.
-		time.Sleep(time.Until(started.Add(minimumCredentialFailureDuration)))
 		return nil, ErrInvalidCredentials
 	}
 	return &identity.Principal, nil

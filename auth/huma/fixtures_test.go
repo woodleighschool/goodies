@@ -74,12 +74,3 @@ func (s *principalStore) ClearAPIKey(_ context.Context, id int64) error {
 	s.id, s.key = id, ""
 	return nil
 }
-
-func newAuthentication(t *testing.T, store authn.Store, sessions *scs.SessionManager) *authn.Service {
-	t.Helper()
-	service, err := authn.NewService(store, sessions)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return service
-}

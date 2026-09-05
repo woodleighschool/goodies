@@ -112,119 +112,18 @@ func (s *s3Store) TransferOrigin() string {
 	return s.transferOrigin
 }
 
-func (s *s3Store) Open(ctx context.Context, key string) (io.ReadSeekCloser, objectInfo, error) {
-	output, err := s.getObject(ctx, key, 0)
-	if err != nil {
-		return nil, objectInfo{}, err
-	}
-	size := aws.ToInt64(output.ContentLength)
-	reader := &s3ObjectReader{
-		body:   output.Body,
-		ctx:    ctx,
-		key:    key,
-		size:   size,
-		openAt: s.openObjectAt,
-	}
-	return reader, objectInfo{Size: size}, nil
-}
-
-func (s *s3Store) getObject(ctx context.Context, key string, offset int64) (*s3.GetObjectOutput, error) {
-	input := &s3.GetObjectInput{
+func (s *s3Store) Open(ctx context.Context, key string) (io.ReadCloser, objectInfo, error) {
+	output, err := s.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(key),
-	}
-	if offset > 0 {
-		input.Range = aws.String(fmt.Sprintf("bytes=%d-", offset))
-	}
-	output, err := s.client.GetObject(ctx, input)
+	})
 	if s3NotFound(err) {
-		return nil, ErrObjectNotFound
+		return nil, objectInfo{}, ErrObjectNotFound
 	}
 	if err != nil {
-		return nil, fmt.Errorf("get %q: %w", key, err)
+		return nil, objectInfo{}, fmt.Errorf("get %q: %w", key, err)
 	}
-	return output, nil
-}
-
-func (s *s3Store) openObjectAt(ctx context.Context, key string, offset int64) (io.ReadCloser, error) {
-	output, err := s.getObject(ctx, key, offset)
-	if err != nil {
-		return nil, err
-	}
-	return output.Body, nil
-}
-
-type s3ObjectReader struct {
-	body   io.ReadCloser
-	ctx    context.Context
-	key    string
-	size   int64
-	offset int64
-	closed bool
-	openAt func(context.Context, string, int64) (io.ReadCloser, error)
-}
-
-var errObjectReaderClosed = errors.New("storage object reader is closed")
-
-func (r *s3ObjectReader) Read(p []byte) (int, error) {
-	if r.closed {
-		return 0, errObjectReaderClosed
-	}
-	if r.offset >= r.size {
-		return 0, io.EOF
-	}
-	if r.body == nil {
-		body, err := r.openAt(r.ctx, r.key, r.offset)
-		if err != nil {
-			return 0, err
-		}
-		r.body = body
-	}
-	n, err := r.body.Read(p)
-	r.offset += int64(n)
-	return n, err
-}
-
-func (r *s3ObjectReader) Seek(offset int64, whence int) (int64, error) {
-	if r.closed {
-		return 0, errObjectReaderClosed
-	}
-	var next int64
-	switch whence {
-	case io.SeekStart:
-		next = offset
-	case io.SeekCurrent:
-		next = r.offset + offset
-	case io.SeekEnd:
-		next = r.size + offset
-	default:
-		return 0, fmt.Errorf("invalid seek whence %d", whence)
-	}
-	if next < 0 {
-		return 0, errors.New("negative storage object seek")
-	}
-	if next == r.offset {
-		return next, nil
-	}
-	if r.body != nil {
-		if err := r.body.Close(); err != nil {
-			return 0, err
-		}
-		r.body = nil
-	}
-	r.offset = next
-	return next, nil
-}
-
-func (r *s3ObjectReader) Close() error {
-	if r.closed {
-		return nil
-	}
-	r.closed = true
-	if r.body != nil {
-		return r.body.Close()
-	}
-	return nil
+	return output.Body, objectInfo{Size: aws.ToInt64(output.ContentLength)}, nil
 }
 
 // Put buffers the body to make it seekable for signing. The presigned upload
@@ -256,10 +155,6 @@ func (s *s3Store) Delete(ctx context.Context, key string) error {
 		return fmt.Errorf("delete %q: %w", key, err)
 	}
 	return nil
-}
-
-func (*s3Store) deliveryMode() deliveryMode {
-	return deliveryRedirect
 }
 
 func (s *s3Store) PresignGet(

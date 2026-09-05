@@ -15,21 +15,15 @@ var ErrObjectNotFound = errors.New("storage object not found")
 // ErrMultipartUploadNotFound reports that a provider no longer has an upload ID.
 var ErrMultipartUploadNotFound = errors.New("storage multipart upload not found")
 
-// blobStore reads and writes blobs by key. Backends: file, s3.
-type blobStore interface {
-	Open(ctx context.Context, key string) (io.ReadSeekCloser, objectInfo, error)
-	Put(ctx context.Context, key string, r io.Reader, opts putOptions) error
-	Delete(ctx context.Context, key string) error
-}
-
 // backend is a configured storage backend. All runtime backends can read/write
 // bytes and mint direct transfer URLs.
 type backend interface {
-	blobStore
-	presigner
+	Open(ctx context.Context, key string) (io.ReadCloser, objectInfo, error)
+	Put(ctx context.Context, key string, r io.Reader, opts putOptions) error
+	Delete(ctx context.Context, key string) error
+	PresignGet(ctx context.Context, key string, ttl time.Duration, opts getOptions) (string, error)
 	PresignPut(ctx context.Context, key string, ttl time.Duration) (UploadTarget, error)
 	TransferOrigin() string
-	deliveryMode() deliveryMode
 	beginUpload(ctx context.Context, key string, sizeBytes int64) (UploadAction, error)
 	seal(ctx context.Context, stagingKey, key string) error
 	cleanupStaging(ctx context.Context, before time.Time) error
@@ -47,11 +41,6 @@ type multipartBackend interface {
 	) (UploadTarget, error)
 	CompleteMultipartUpload(ctx context.Context, key, uploadID string, parts []CompletedPart) error
 	AbortMultipartUpload(ctx context.Context, key, uploadID string) error
-}
-
-// presigner mints direct read URLs.
-type presigner interface {
-	PresignGet(ctx context.Context, key string, ttl time.Duration, opts getOptions) (string, error)
 }
 
 // objectInfo is backend metadata for stored bytes.

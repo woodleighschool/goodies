@@ -1,4 +1,4 @@
-package browser
+package authn
 
 import (
 	"encoding/json"
@@ -9,13 +9,13 @@ import (
 
 // LimitPasswordLogin admits ten attempts per minute with a burst of four.
 // Mount it only on password login, before session loading and body validation.
-func (b *Service) LimitPasswordLogin(next http.Handler) http.Handler {
+func (s *Service) LimitPasswordLogin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if b.loginLimiter.Allow() {
+		if s.loginLimiter.Allow() {
 			next.ServeHTTP(w, r)
 			return
 		}
-		seconds := max(int(math.Ceil((1-b.loginLimiter.Tokens())/float64(b.loginLimiter.Limit()))), 1)
+		seconds := max(int(math.Ceil((1-s.loginLimiter.Tokens())/float64(s.loginLimiter.Limit()))), 1)
 		w.Header().Set("Content-Type", "application/problem+json")
 		w.Header().Set("Retry-After", strconv.Itoa(seconds))
 		w.WriteHeader(http.StatusTooManyRequests)

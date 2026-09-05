@@ -2,66 +2,67 @@ package bloby
 
 import (
 	"bytes"
-	"context"
-	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/woodleighschool/goodies/bloby/internal/capability"
 )
 
 func TestBlobGetServesBytesAndRanges(t *testing.T) {
 	t.Parallel()
 	store := newTransferTestFileStore(t)
 	const key = "munki/packages/1/Installer.pkg"
-	if err := store.Put(
-		t.Context(),
-		key,
-		strings.NewReader("0123456789"),
-		putOptions{},
-	); err != nil {
-		t.Fatalf("Put: %v", err)
+	if err := store.Put(t.Context(), key, strings.NewReader("0123456789"), putOptions{}); err != nil {
+		t.Fatal(err)
 	}
-	router := newBlobTestRouter(store)
-	token := signBlobCapability(t, blobCapabilityClaims{
-		Op:          capability.OpGet,
+	server := httptest.NewServer(newBlobTestRouter(store))
+	t.Cleanup(server.Close)
+	token := signBlobCapability(t, capabilityClaims{
+		Op:          capabilityGet,
 		Key:         key,
 		Exp:         time.Now().Add(time.Minute).Unix(),
 		ContentType: "application/octet-stream",
 	})
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/storage/munki/packages/1/Installer.pkg?cap="+token, nil)
-	router.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body = %q", rec.Code, http.StatusOK, rec.Body.String())
-	}
-	if rec.Body.String() != "0123456789" {
-		t.Fatalf("body = %q, want full object", rec.Body.String())
-	}
-	if got := rec.Header().Get("Content-Type"); got != "application/octet-stream" {
-		t.Fatalf("Content-Type = %q, want application/octet-stream", got)
-	}
-
-	rec = httptest.NewRecorder()
-	req = httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/storage/munki/packages/1/Installer.pkg?cap="+token, nil)
-	req.Header.Set("Range", "bytes=2-5")
-	router.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusPartialContent {
-		t.Fatalf("range status = %d, want %d; body = %q", rec.Code, http.StatusPartialContent, rec.Body.String())
-	}
-	if rec.Body.String() != "2345" {
-		t.Fatalf("range body = %q, want 2345", rec.Body.String())
-	}
-	if got := rec.Header().Get("Content-Range"); got != "bytes 2-5/10" {
-		t.Fatalf("Content-Range = %q, want bytes 2-5/10", got)
+	for _, test := range []struct {
+		name         string
+		rangeHeader  string
+		status       int
+		body         string
+		contentRange string
+	}{
+		{name: "full object", status: http.StatusOK, body: "0123456789"},
+		{name: "byte range", rangeHeader: "bytes=2-5", status: http.StatusPartialContent, body: "2345", contentRange: "bytes 2-5/10"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL+"/storage/"+key+"?cap="+token, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Range", test.rangeHeader)
+			response, err := server.Client().Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = response.Body.Close() }()
+			body, err := io.ReadAll(response.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if response.StatusCode != test.status || string(body) != test.body {
+				t.Fatalf("response = %d/%q, want %d/%q", response.StatusCode, body, test.status, test.body)
+			}
+			if got := response.Header.Get("Content-Range"); got != test.contentRange {
+				t.Fatalf("Content-Range = %q, want %q", got, test.contentRange)
+			}
+			if got := response.Header.Get("Content-Type"); got != "application/octet-stream" {
+				t.Fatalf("Content-Type = %q", got)
+			}
+		})
 	}
 }
 
@@ -73,8 +74,8 @@ func TestBlobGetAcceptsEquivalentEscapingForSignedKey(t *testing.T) {
 	if err := store.Put(t.Context(), key, strings.NewReader("zoom"), putOptions{}); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	token := signBlobCapability(t, blobCapabilityClaims{
-		Op:  capability.OpGet,
+	token := signBlobCapability(t, capabilityClaims{
+		Op:  capabilityGet,
 		Key: key,
 		Exp: time.Now().Add(time.Minute).Unix(),
 	})
@@ -100,13 +101,13 @@ func TestBlobGetRejectsInvalidExpiredAndMissingObjects(t *testing.T) {
 	t.Parallel()
 	store := newTransferTestFileStore(t)
 	router := newBlobTestRouter(store)
-	expired := signBlobCapability(t, blobCapabilityClaims{
-		Op:  capability.OpGet,
+	expired := signBlobCapability(t, capabilityClaims{
+		Op:  capabilityGet,
 		Key: "munki/icons/1/icon.png",
 		Exp: time.Now().Add(-time.Minute).Unix(),
 	})
-	missing := signBlobCapability(t, blobCapabilityClaims{
-		Op:  capability.OpGet,
+	missing := signBlobCapability(t, capabilityClaims{
+		Op:  capabilityGet,
 		Key: "munki/icons/1/icon.png",
 		Exp: time.Now().Add(time.Minute).Unix(),
 	})
@@ -138,8 +139,8 @@ func TestBlobPutWritesAndRejectsWrongOperation(t *testing.T) {
 	store := newTransferTestFileStore(t)
 	router := newBlobTestRouter(store)
 	key := "munki/icons/7/icon.png"
-	putToken := signBlobCapability(t, blobCapabilityClaims{
-		Op:  capability.OpPut,
+	putToken := signBlobCapability(t, capabilityClaims{
+		Op:  capabilityPut,
 		Key: key,
 		Exp: time.Now().Add(time.Minute).Unix(),
 	})
@@ -168,8 +169,8 @@ func TestBlobPutWritesAndRejectsWrongOperation(t *testing.T) {
 		t.Fatalf("stored bytes = %q, want png bytes", got)
 	}
 
-	getToken := signBlobCapability(t, blobCapabilityClaims{
-		Op:  capability.OpGet,
+	getToken := signBlobCapability(t, capabilityClaims{
+		Op:  capabilityGet,
 		Key: key,
 		Exp: time.Now().Add(time.Minute).Unix(),
 	})
@@ -189,8 +190,8 @@ func TestBlobRejectsMismatchedPathAndSignedKey(t *testing.T) {
 	t.Parallel()
 	store := newTransferTestFileStore(t)
 	router := newBlobTestRouter(store)
-	token := signBlobCapability(t, blobCapabilityClaims{
-		Op:  capability.OpGet,
+	token := signBlobCapability(t, capabilityClaims{
+		Op:  capabilityGet,
 		Key: "munki/icons/7/icon.png",
 		Exp: time.Now().Add(time.Minute).Unix(),
 	})
@@ -206,15 +207,18 @@ func TestBlobRejectsMismatchedPathAndSignedKey(t *testing.T) {
 
 func TestBlobGetLogsOpenFailures(t *testing.T) {
 	t.Parallel()
+	store := newTestFileStore(t)
+	if err := os.WriteFile(filepath.Join(store.root, "munki"), []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&logs, nil))
 	h := transferHandler{
-		store:  failingOpenStore{},
-		key:    testCapabilityKey,
+		store:  store,
 		logger: logger,
 	}
-	token := signBlobCapability(t, blobCapabilityClaims{
-		Op:  capability.OpGet,
+	token := signBlobCapability(t, capabilityClaims{
+		Op:  capabilityGet,
 		Key: "munki/packages/1/Installer.pkg",
 		Exp: time.Now().Add(time.Minute).Unix(),
 	})
@@ -232,7 +236,7 @@ func TestBlobGetLogsOpenFailures(t *testing.T) {
 		`"operation":"get-storage-object"`,
 		`"status":500`,
 		`"key":"munki/packages/1/Installer.pkg"`,
-		`"err":"open object: backend unavailable"`,
+		`"err":"open object: open`,
 	} {
 		if !strings.Contains(line, want) {
 			t.Fatalf("log line %q does not contain %s", line, want)
@@ -272,13 +276,9 @@ func newBlobTestRouter(store backend) http.Handler {
 	return (&Service{backend: store, logger: testLogger()}).TransferHandler()
 }
 
-func signBlobCapability(t *testing.T, claims blobCapabilityClaims) string {
+func signBlobCapability(t *testing.T, claims capabilityClaims) string {
 	t.Helper()
-	token, err := capability.Sign(testCapabilityKey, claims)
-	if err != nil {
-		t.Fatalf("Sign: %v", err)
-	}
-	return token
+	return signCapability(testCapabilityKey, claims)
 }
 
 func newTransferTestFileStore(t *testing.T) backend {
@@ -296,18 +296,4 @@ func newTransferTestFileStore(t *testing.T) backend {
 		t.Fatalf("new storage backend: %v", err)
 	}
 	return store
-}
-
-type failingOpenStore struct{}
-
-func (failingOpenStore) Open(_ context.Context, _ string) (io.ReadSeekCloser, objectInfo, error) {
-	return nil, objectInfo{}, errors.New("backend unavailable")
-}
-
-func (failingOpenStore) Put(context.Context, string, io.Reader, putOptions) error {
-	return errors.New("unexpected put")
-}
-
-func (failingOpenStore) Delete(context.Context, string) error {
-	return nil
 }

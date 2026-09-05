@@ -111,49 +111,24 @@ func TestRegistryPublishIsOneWayAndIdempotent(t *testing.T) {
 	if _, err := registry.RefreshPending(ctx, object.ID); !errors.Is(err, bloby.ErrNotFound) {
 		t.Fatalf("refresh available: %v", err)
 	}
-	if _, _, err := registry.RecordMultipartUploadID(ctx, object.ID, "upload-after-finalize"); !errors.Is(err, bloby.ErrInvalidInput) {
+	if err := registry.RecordMultipartUploadID(ctx, object.ID, "upload-after-finalize"); !errors.Is(err, bloby.ErrNotFound) {
 		t.Fatalf("multipart after publication: %v", err)
 	}
 }
 
-func TestRegistryMultipartCreationHasOneWinner(t *testing.T) {
+func TestRegistryMultipartMustCompleteBeforePublication(t *testing.T) {
 	db, ctx := openTestDatabase(t)
 	registry := pgxstore.New(db)
 	object, err := registry.CreatePending(ctx, "documents/reports", "report.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
-	type result struct {
-		id      string
-		created bool
-		err     error
+	const uploadID = "provider-upload"
+	if err := registry.RecordMultipartUploadID(ctx, object.ID, uploadID); err != nil {
+		t.Fatal(err)
 	}
-	results := make(chan result, 12)
-	for i := range 12 {
-		go func() {
-			id, created, err := registry.RecordMultipartUploadID(ctx, object.ID, fmt.Sprintf("upload-%d", i))
-			results <- result{id, created, err}
-		}()
-	}
-	var winner string
-	winners := 0
-	for range 12 {
-		result := <-results
-		if result.err != nil {
-			t.Fatal(result.err)
-		}
-		if winner == "" {
-			winner = result.id
-		}
-		if result.id != winner {
-			t.Fatalf("multiple upload IDs %q/%q", winner, result.id)
-		}
-		if result.created {
-			winners++
-		}
-	}
-	if winners != 1 {
-		t.Fatalf("created %d provider uploads", winners)
+	if err := registry.RecordMultipartUploadID(ctx, object.ID, "replacement"); !errors.Is(err, bloby.ErrNotFound) {
+		t.Fatalf("replace existing multipart upload: %v", err)
 	}
 	if err := registry.ClearMultipartUploadID(ctx, object.ID, "wrong-id"); !errors.Is(err, bloby.ErrConflict) {
 		t.Fatalf("clear different upload: %v", err)
@@ -161,10 +136,10 @@ func TestRegistryMultipartCreationHasOneWinner(t *testing.T) {
 	if _, err := registry.MarkAvailable(ctx, object.ID, 5, "text/plain", strings.Repeat("a", 64), fmt.Sprintf("_objects/%d/candidate", object.ID)); !errors.Is(err, bloby.ErrInvalidInput) {
 		t.Fatalf("publish unassembled multipart: %v", err)
 	}
-	if err := registry.ClearMultipartUploadID(ctx, object.ID, winner); err != nil {
+	if err := registry.ClearMultipartUploadID(ctx, object.ID, uploadID); err != nil {
 		t.Fatal(err)
 	}
-	if err := registry.ClearMultipartUploadID(ctx, object.ID, winner); err != nil {
+	if err := registry.ClearMultipartUploadID(ctx, object.ID, uploadID); err != nil {
 		t.Fatalf("clear retry: %v", err)
 	}
 }
