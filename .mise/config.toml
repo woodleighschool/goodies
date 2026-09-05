@@ -2,7 +2,7 @@
 go = "1.27.0"
 golangci-lint = "2.13.2"
 node = "26.8.1"
-pnpm = "11.25.0"
+pnpm = "12.3.4"
 actionlint = "1.7.12"
 zizmor = "1.30.0"
 "go:golang.org/x/vuln/cmd/govulncheck" = "1.7.0"
