@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.0.0](https://github.com/woodleighschool/goodies/compare/bloby/v0.2.0...bloby/v1.0.0) (2026-09-05)
+
+
+### ⚠ BREAKING CHANGES
+
+* simplify shared service boundaries ([#10](https://github.com/woodleighschool/goodies/issues/10))
+
+### Features
+
+* simplify shared service boundaries ([#10](https://github.com/woodleighschool/goodies/issues/10)) ([b9f0c2a](https://github.com/woodleighschool/goodies/commit/b9f0c2af22d5b0b0a92bb9758372031baba3a6e9))
+
 ## [0.2.0](https://github.com/woodleighschool/goodies/compare/bloby/v0.1.1...bloby/v0.2.0) (2026-09-03)
 
 
