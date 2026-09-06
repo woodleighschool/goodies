@@ -1,3 +1,5 @@
+monorepo_root = true
+
 [tools]
 go = "1.27.0"
 golangci-lint = "2.13.2"
@@ -11,92 +13,66 @@ zizmor = "1.30.0"
 experimental = true
 lockfile = true
 
+[monorepo]
+config_roots = ["auth", "bloby", "pglock", "packages/*"]
+
 [tasks.deps]
-run = [
-  "go -C auth mod download",
-  "go -C bloby mod download",
-  "go -C pglock mod download",
-  "pnpm install --frozen-lockfile",
-]
+description = "Install Go module and Node workspace dependencies"
+depends = ["//auth:deps", "//bloby:deps", "//pglock:deps", "node-deps"]
+
+[tasks.node-deps]
+description = "Install Node workspace dependencies"
+run = "pnpm install --frozen-lockfile"
 
 [tasks.test]
-run = ["go test -race -count=1 ./auth/... ./bloby/... ./pglock/...", "pnpm test"]
+description = "Test every module and package"
+depends = ["//auth:test", "//bloby:test", "//pglock:test", "//packages/...:test"]
 
 [tasks.check]
+description = "Check formatting, lint, tests, module metadata, builds, and vulnerabilities"
 run = [
   { task = "fmt-check" },
   { task = "lint" },
   { task = "test" },
-  { task = "test-module" },
+  { task = "tidy-check" },
   { task = "build" },
-  { task = "workflow-lint" },
   { task = "vulncheck" },
 ]
 
-[tasks.test-module]
-run = [
-  { task = "test-module-auth" },
-  { task = "test-module-bloby" },
-  { task = "test-module-pglock" },
-]
+[tasks.tidy]
+description = "Tidy every Go module"
+depends = ["//auth:tidy", "//bloby:tidy", "//pglock:tidy"]
 
-[tasks.test-module-auth]
-dir = "auth"
-env.GOWORK = "off"
-run = ["go vet ./...", "go test -race -count=1 ./...", "go mod tidy -diff"]
-
-[tasks.test-module-bloby]
-dir = "bloby"
-env.GOWORK = "off"
-run = ["go vet ./...", "go test -race -count=1 ./...", "go mod tidy -diff"]
-
-[tasks.test-module-pglock]
-dir = "pglock"
-env.GOWORK = "off"
-run = ["go vet ./...", "go test -race -count=1 ./...", "go mod tidy -diff"]
+[tasks.tidy-check]
+description = "Check every Go module is tidy"
+depends = ["//auth:tidy-check", "//bloby:tidy-check", "//pglock:tidy-check"]
 
 [tasks.test-postgres]
-run = '''
-BLOBY_TEST_DATABASE_URL="${BLOBY_TEST_DATABASE_URL:-postgres://goodies:goodies@127.0.0.1:5432/postgres?sslmode=disable}" \
-PGLOCK_TEST_DATABASE_URL="${PGLOCK_TEST_DATABASE_URL:-postgres://goodies:goodies@127.0.0.1:5432/postgres?sslmode=disable}" \
-  go test -race -count=1 ./bloby/pgxstore ./pglock
-'''
+description = "Test Bloby's registry and advisory locks against PostgreSQL"
+depends = ["//bloby:test-postgres", "//pglock:test-postgres"]
 
 [tasks.build]
-run = ["go build ./auth/... ./bloby/... ./pglock/...", "pnpm build"]
+description = "Build every module and package"
+depends = ["//auth:build", "//bloby:build", "//pglock:build", "//packages/...:build"]
 
 [tasks.lint]
-run = [{ task = "go-lint" }, "pnpm lint", "pnpm typecheck"]
+description = "Lint every module and package"
+depends = ["//auth:lint", "//bloby:lint", "//pglock:lint", "//packages/...:lint"]
 
-[tasks.go-lint]
-run = "golangci-lint run ./auth/... ./bloby/... ./pglock/..."
-
-[tasks.go-lint-fix]
-run = "golangci-lint run --fix ./auth/... ./bloby/... ./pglock/..."
+[tasks.lint-fix]
+description = "Apply Go lint fixes"
+depends = ["//auth:lint-fix", "//bloby:lint-fix", "//pglock:lint-fix"]
 
 [tasks.format]
-run = ["gofmt -w auth bloby pglock", "pnpm format"]
+description = "Format the repository"
+depends = ["//auth:format", "//bloby:format", "//pglock:format", "node-deps"]
+run = "pnpm run format"
 
 [tasks.fmt-check]
-run = ["test -z \"$(gofmt -l auth bloby pglock)\"", "pnpm format:check"]
-
-[tasks.workflow-lint]
-run = ["actionlint", "zizmor --min-severity medium --format plain .github/workflows"]
+description = "Check repository formatting"
+depends = ["//auth:fmt-check", "//bloby:fmt-check", "//pglock:fmt-check", "node-deps"]
+run = "pnpm run format:check"
 
 [tasks.vulncheck]
-run = [{ task = "vulncheck-auth" }, { task = "vulncheck-bloby" }, { task = "vulncheck-pglock" }]
-
-[tasks.vulncheck-auth]
-dir = "auth"
-env.GOWORK = "off"
-run = "govulncheck ./..."
-
-[tasks.vulncheck-bloby]
-dir = "bloby"
-env.GOWORK = "off"
-run = "govulncheck ./..."
-
-[tasks.vulncheck-pglock]
-dir = "pglock"
-env.GOWORK = "off"
-run = "govulncheck ./..."
+description = "Scan every Go module for known vulnerabilities"
+depends = ["//auth:vulncheck", "//bloby:vulncheck", "//pglock:vulncheck"]
