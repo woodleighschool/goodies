@@ -40,7 +40,9 @@ Bloby tests storage protocols, replay, publication and cleanup. PostgreSQL tests
 
 ## 🛠️ Development
 
-Use `mise run deps`, then `mise run check`. `test-module` checks each Go module with `GOWORK=off` so workspace resolution cannot hide missing dependencies. `test-postgres` exercises Bloby's registry and advisory locks against PostgreSQL.
+Use `mise run deps`, then `mise run check`. The root Mise config owns tool versions and aggregate tasks; each Go module and Node package owns its tasks in `.mise.toml`. Run a component directly with commands such as `mise //auth:test`, `mise //bloby:tidy-check`, or `mise //packages/authz:build`.
+
+Go module tasks use `GOWORK=off` so workspace resolution cannot hide missing dependencies. Node tasks share one workspace install and call the package's scripts. `mise run test-postgres` exercises Bloby's registry and advisory locks against PostgreSQL; run either component's `test-postgres` task to target it individually.
 
 ## 📦 Releases
 

@@ -1,0 +1,19 @@
+[tasks.build]
+description = "Build the permissions package"
+depends = ["//:node-deps"]
+run = "pnpm run build"
+
+[tasks.test]
+description = "Test the permissions package"
+depends = ["//:node-deps"]
+run = "pnpm run test"
+
+[tasks.typecheck]
+description = "Typecheck the permissions package"
+depends = ["//:node-deps"]
+run = "pnpm run typecheck"
+
+[tasks.lint]
+description = "Lint and typecheck the permissions package"
+depends = ["//:node-deps"]
+run = "pnpm run lint"

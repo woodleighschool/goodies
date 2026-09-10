@@ -1,0 +1,49 @@
+[env]
+GOWORK = "off"
+
+[tasks.deps]
+description = "Download Bloby dependencies"
+run = "go mod download"
+
+[tasks.build]
+description = "Build Bloby"
+run = "go build ./..."
+
+[tasks.test]
+description = "Run Bloby checks"
+run = ["go vet ./...", "go test -race -count=1 ./..."]
+
+[tasks.test-postgres]
+description = "Test Bloby's PostgreSQL registry"
+run = '''
+BLOBY_TEST_DATABASE_URL="${BLOBY_TEST_DATABASE_URL:-postgres://goodies:goodies@127.0.0.1:5432/postgres?sslmode=disable}" \
+  go test -race -count=1 ./pgxstore
+'''
+
+[tasks.tidy]
+description = "Tidy the Bloby module"
+run = "go mod tidy"
+
+[tasks.tidy-check]
+description = "Check the Bloby module is tidy"
+run = "go mod tidy -diff"
+
+[tasks.vulncheck]
+description = "Scan Bloby for known vulnerabilities"
+run = "govulncheck ./..."
+
+[tasks.lint]
+description = "Run Bloby linters"
+run = "golangci-lint run --allow-serial-runners"
+
+[tasks.lint-fix]
+description = "Run Bloby linters and apply fixes"
+run = "golangci-lint run --allow-serial-runners --fix"
+
+[tasks.format]
+description = "Format Bloby"
+run = "go fmt ./..."
+
+[tasks.fmt-check]
+description = "Check Bloby formatting"
+run = "test -z \"$(gofmt -l .)\" || { gofmt -l .; exit 1; }"

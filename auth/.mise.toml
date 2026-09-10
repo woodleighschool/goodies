@@ -1,0 +1,42 @@
+[env]
+GOWORK = "off"
+
+[tasks.deps]
+description = "Download Auth dependencies"
+run = "go mod download"
+
+[tasks.build]
+description = "Build Auth"
+run = "go build ./..."
+
+[tasks.test]
+description = "Run Auth checks"
+run = ["go vet ./...", "go test -race -count=1 ./..."]
+
+[tasks.tidy]
+description = "Tidy the Auth module"
+run = "go mod tidy"
+
+[tasks.tidy-check]
+description = "Check the Auth module is tidy"
+run = "go mod tidy -diff"
+
+[tasks.vulncheck]
+description = "Scan Auth for known vulnerabilities"
+run = "govulncheck ./..."
+
+[tasks.lint]
+description = "Run Auth linters"
+run = "golangci-lint run --allow-serial-runners"
+
+[tasks.lint-fix]
+description = "Run Auth linters and apply fixes"
+run = "golangci-lint run --allow-serial-runners --fix"
+
+[tasks.format]
+description = "Format Auth"
+run = "go fmt ./..."
+
+[tasks.fmt-check]
+description = "Check Auth formatting"
+run = "test -z \"$(gofmt -l .)\" || { gofmt -l .; exit 1; }"

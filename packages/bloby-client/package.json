@@ -28,6 +28,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
+    "lint": "oxlint . && pnpm run typecheck",
     "test": "node --import tsx --test tests/*.test.ts",
     "prepublishOnly": "pnpm run typecheck && pnpm run test",
     "prepare": "pnpm run build"

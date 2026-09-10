@@ -1,0 +1,49 @@
+[env]
+GOWORK = "off"
+
+[tasks.deps]
+description = "Download advisory lock dependencies"
+run = "go mod download"
+
+[tasks.build]
+description = "Build advisory locks"
+run = "go build ./..."
+
+[tasks.test]
+description = "Run advisory lock checks"
+run = ["go vet ./...", "go test -race -count=1 ./..."]
+
+[tasks.test-postgres]
+description = "Test advisory locks against PostgreSQL"
+run = '''
+PGLOCK_TEST_DATABASE_URL="${PGLOCK_TEST_DATABASE_URL:-postgres://goodies:goodies@127.0.0.1:5432/postgres?sslmode=disable}" \
+  go test -race -count=1 ./...
+'''
+
+[tasks.tidy]
+description = "Tidy the advisory lock module"
+run = "go mod tidy"
+
+[tasks.tidy-check]
+description = "Check the advisory lock module is tidy"
+run = "go mod tidy -diff"
+
+[tasks.vulncheck]
+description = "Scan advisory locks for known vulnerabilities"
+run = "govulncheck ./..."
+
+[tasks.lint]
+description = "Run advisory lock linters"
+run = "golangci-lint run --allow-serial-runners"
+
+[tasks.lint-fix]
+description = "Run advisory lock linters and apply fixes"
+run = "golangci-lint run --allow-serial-runners --fix"
+
+[tasks.format]
+description = "Format advisory locks"
+run = "go fmt ./..."
+
+[tasks.fmt-check]
+description = "Check advisory lock formatting"
+run = "test -z \"$(gofmt -l .)\" || { gofmt -l .; exit 1; }"

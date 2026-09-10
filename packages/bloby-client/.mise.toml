@@ -1,0 +1,19 @@
+[tasks.build]
+description = "Build the browser transfers package"
+depends = ["//:node-deps"]
+run = "pnpm run build"
+
+[tasks.test]
+description = "Test the browser transfers package"
+depends = ["//:node-deps"]
+run = "pnpm run test"
+
+[tasks.typecheck]
+description = "Typecheck the browser transfers package"
+depends = ["//:node-deps"]
+run = "pnpm run typecheck"
+
+[tasks.lint]
+description = "Lint and typecheck the browser transfers package"
+depends = ["//:node-deps"]
+run = "pnpm run lint"
