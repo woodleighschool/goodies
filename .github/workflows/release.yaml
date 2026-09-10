@@ -31,7 +31,7 @@ jobs:
           permission-issues: write
           permission-pull-requests: write
       - name: Release Please
-        uses: release-please-oss/release-please-action@b2f29f57aa3d7dae6576e3b71bc0e8041e7bb5a2 # v5.0.0
+        uses: release-please-oss/release-please-action@0a385bebb853de7961b38d9a2d92fcba4eb7a23b # v6.0.3
         id: release
         with:
           token: ${{ steps.app-token.outputs.token }}
