@@ -47,3 +47,5 @@ Go module tasks use `GOWORK=off` so workspace resolution cannot hide missing dep
 ## 📦 Releases
 
 Release Please maintains one release PR with independent versions. Go module tags use paths such as `auth/vX.Y.Z` and `bloby/vX.Y.Z`; frontend tags use `authz/vX.Y.Z` and `bloby-client/vX.Y.Z`. Released paths under `packages/*` publish to npm from their release tags through trusted publishing. Each package owns its publish checks in `prepublishOnly` and build in `prepare`; adding a package to Release Please requires no workflow changes.
+
+All configured conventional commit types, including `chore` and `ci`, can trigger releases for the packages they touch. Root-only tooling and workflow changes do not release packages. Before 1.0, features bump the patch version and breaking changes bump the minor version.
