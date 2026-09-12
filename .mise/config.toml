@@ -7,10 +7,14 @@ node = "26.8.1"
 pnpm = "12.3.4"
 actionlint = "1.7.12"
 zizmor = "1.30.0"
+lefthook = "2.1.12"
+oxfmt = "0.67.0"
+"npm:@commitlint/cli" = "21.2.2"
 "go:golang.org/x/vuln/cmd/govulncheck" = "v1.8.0"
 
 [settings]
 experimental = true
+pin = true
 lockfile = true
 
 [monorepo]
@@ -26,7 +30,12 @@ run = "pnpm install --frozen-lockfile"
 
 [tasks.test]
 description = "Test every module and package"
-depends = ["//auth:test", "//bloby:test", "//pglock:test", "//packages/...:test"]
+depends = [
+  "//auth:test",
+  "//bloby:test",
+  "//pglock:test",
+  "//packages/...:test",
+]
 
 [tasks.check]
 description = "Check formatting, lint, tests, module metadata, builds, and vulnerabilities"
@@ -53,11 +62,21 @@ depends = ["//bloby:test-postgres", "//pglock:test-postgres"]
 
 [tasks.build]
 description = "Build every module and package"
-depends = ["//auth:build", "//bloby:build", "//pglock:build", "//packages/...:build"]
+depends = [
+  "//auth:build",
+  "//bloby:build",
+  "//pglock:build",
+  "//packages/...:build",
+]
 
 [tasks.lint]
 description = "Lint every module and package"
-depends = ["//auth:lint", "//bloby:lint", "//pglock:lint", "//packages/...:lint"]
+depends = [
+  "//auth:lint",
+  "//bloby:lint",
+  "//pglock:lint",
+  "//packages/...:lint",
+]
 
 [tasks.lint-fix]
 description = "Apply Go lint fixes"
@@ -65,14 +84,17 @@ depends = ["//auth:lint-fix", "//bloby:lint-fix", "//pglock:lint-fix"]
 
 [tasks.format]
 description = "Format the repository"
-depends = ["//auth:format", "//bloby:format", "//pglock:format", "node-deps"]
-run = "pnpm run format"
+depends = ["//auth:format", "//bloby:format", "//pglock:format"]
+run = ["mise fmt", "oxfmt"]
 
 [tasks.fmt-check]
 description = "Check repository formatting"
-depends = ["//auth:fmt-check", "//bloby:fmt-check", "//pglock:fmt-check", "node-deps"]
-run = "pnpm run format:check"
+depends = ["//auth:fmt-check", "//bloby:fmt-check", "//pglock:fmt-check"]
+run = ["mise fmt --check", "oxfmt --check"]
 
 [tasks.vulncheck]
 description = "Scan every Go module for known vulnerabilities"
 depends = ["//auth:vulncheck", "//bloby:vulncheck", "//pglock:vulncheck"]
+
+[hooks]
+postinstall = "lefthook install"

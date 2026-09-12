@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_dispatch:
   pull_request:
   merge_group:
   push:
@@ -12,6 +13,10 @@ permissions:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  MISE_NO_HOOKS: "1"
+  MISE_TASK_RUN_AUTO_INSTALL: "false"
 
 jobs:
   workflow-lint:
@@ -72,6 +77,7 @@ jobs:
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
           experimental: true
+          install_args: --locked go golangci-lint node pnpm oxfmt go:golang.org/x/vuln/cmd/govulncheck
       - run: mise run deps
       - run: mise run check
       - run: mise run test-postgres

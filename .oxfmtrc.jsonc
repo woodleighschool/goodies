@@ -1,5 +1,6 @@
 {
   "ignorePatterns": [
+    ".mise/config.toml",
     "HELP.md",
     "**/CHANGELOG.md",
     "pnpm-lock.yaml",
