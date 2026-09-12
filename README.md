@@ -40,10 +40,12 @@ Bloby tests storage protocols, replay, publication and cleanup. PostgreSQL tests
 
 ## 🛠️ Development
 
-Use `mise run deps`, then `mise run check`. The root Mise config owns tool versions and aggregate tasks; each Go module and Node package owns its tasks in `.mise.toml`. Run a component directly with commands such as `mise //auth:test`, `mise //bloby:tidy-check`, or `mise //packages/authz:build`.
+Use `mise install`, then `mise run deps` and `mise run check`. Mise installs the shared Git hooks for formatting, workflow checks, and conventional commit validation. The root Mise config owns tool versions and aggregate tasks; each Go module and Node package owns its tasks in `.mise.toml`. Run a component directly with commands such as `mise //auth:test`, `mise //bloby:tidy-check`, or `mise //packages/authz:build`.
 
 Go module tasks use `GOWORK=off` so workspace resolution cannot hide missing dependencies. Node tasks share one workspace install and call the package's scripts. `mise run test-postgres` exercises Bloby's registry and advisory locks against PostgreSQL; run either component's `test-postgres` task to target it individually.
 
 ## 📦 Releases
 
 Release Please maintains one release PR with independent versions. Go module tags use paths such as `auth/vX.Y.Z` and `bloby/vX.Y.Z`; frontend tags use `authz/vX.Y.Z` and `bloby-client/vX.Y.Z`. Released paths under `packages/*` publish to npm from their release tags through trusted publishing. Each package owns its publish checks in `prepublishOnly` and build in `prepare`; adding a package to Release Please requires no workflow changes.
+
+All configured conventional commit types, including `chore` and `ci`, can trigger releases for the packages they touch. Root-only tooling and workflow changes do not release packages. Before 1.0, features bump the patch version and breaking changes bump the minor version.

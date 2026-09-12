@@ -1,0 +1,12 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  extends: ["local>woodleighschool/renovate-config"],
+  postUpdateOptions: ["gomodTidy", "gomodUpdateImportPaths"],
+  packageRules: [
+    {
+      matchManagers: ["npm"],
+      matchDepTypes: ["peerDependencies"],
+      rangeStrategy: "widen",
+    },
+  ],
+}
