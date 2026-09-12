@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.1.0](https://github.com/woodleighschool/goodies/compare/auth/v1.0.0...auth/v1.1.0) (2026-09-12)
+
+
+### Features
+
+* **go:** update module golang.org/x/oauth2 (v0.36.0 → v0.37.0) ([#30](https://github.com/woodleighschool/goodies/issues/30)) ([658a3c3](https://github.com/woodleighschool/goodies/commit/658a3c30bded7ac6355e8a083f885d98aa04c232))
+* **go:** update module golang.org/x/time (v0.15.0 → v0.16.0) ([#31](https://github.com/woodleighschool/goodies/issues/31)) ([1d0fe18](https://github.com/woodleighschool/goodies/commit/1d0fe183ae94c89757008b291af81f3f528269dd))
+
+
+### Miscellaneous Chores
+
+* move to mise monorepo ([7450e2e](https://github.com/woodleighschool/goodies/commit/7450e2e11907ea1f1341663f01ecfeedc9bf8888))
+
 ## [1.0.0](https://github.com/woodleighschool/goodies/compare/auth/v0.2.0...auth/v1.0.0) (2026-09-05)
 
 

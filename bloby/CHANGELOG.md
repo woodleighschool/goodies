@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.1.0](https://github.com/woodleighschool/goodies/compare/bloby/v1.0.0...bloby/v1.1.0) (2026-09-12)
+
+
+### Features
+
+* **go:** update aws-sdk-go-v2 monorepo ([#27](https://github.com/woodleighschool/goodies/issues/27)) ([01a880e](https://github.com/woodleighschool/goodies/commit/01a880ea64649032aaeef852a0c5f5cc4c44ceaa))
+* **go:** update module github.com/jackc/pgx/v5 (v5.10.0 → v5.11.0) ([#28](https://github.com/woodleighschool/goodies/issues/28)) ([ba672b8](https://github.com/woodleighschool/goodies/commit/ba672b8b901e64083d88b5796f303b46f5350d98))
+* **go:** update module github.com/pressly/goose/v3 (v3.27.3 → v3.28.0) ([#29](https://github.com/woodleighschool/goodies/issues/29)) ([8551eb8](https://github.com/woodleighschool/goodies/commit/8551eb8cee75dc65e94bb24702fe0e0eea38ef81))
+
+
+### Miscellaneous Chores
+
+* move to mise monorepo ([7450e2e](https://github.com/woodleighschool/goodies/commit/7450e2e11907ea1f1341663f01ecfeedc9bf8888))
+
 ## [1.0.0](https://github.com/woodleighschool/goodies/compare/bloby/v0.2.0...bloby/v1.0.0) (2026-09-05)
 
 

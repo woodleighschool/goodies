@@ -1,7 +1,7 @@
 {
-  "auth": "1.0.0",
-  "pglock": "0.1.0",
-  "bloby": "1.0.0",
-  "packages/authz": "1.0.0",
-  "packages/bloby-client": "1.0.0"
+  "auth": "1.1.0",
+  "pglock": "0.1.1",
+  "bloby": "1.1.0",
+  "packages/authz": "1.1.0",
+  "packages/bloby-client": "1.1.0"
 }
