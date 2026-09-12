@@ -11,7 +11,7 @@ require (
 	github.com/danielgtaylor/huma/v2 v2.39.1
 	github.com/gabriel-vasile/mimetype v1.4.15
 	github.com/jackc/pgerrcode v0.0.0-20250907135507-afb5586c32a6
-	github.com/jackc/pgx/v5 v5.10.0
+	github.com/jackc/pgx/v5 v5.11.0
 	github.com/pressly/goose/v3 v3.27.3
 )
 
