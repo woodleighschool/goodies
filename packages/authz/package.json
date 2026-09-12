@@ -38,7 +38,7 @@
     "prepare": "pnpm run build"
   },
   "devDependencies": {
-    "@types/node": "^26.5.0",
+    "@types/node": "^26.5.1",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
     "react": "^19.2.8",
