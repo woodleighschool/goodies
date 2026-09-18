@@ -18,7 +18,7 @@ env:
 
 jobs:
   release:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: write
       issues: write
@@ -57,7 +57,7 @@ jobs:
   publish-node:
     needs: release
     if: ${{ needs.release.outputs.node-releases != '[]' }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
       id-token: write
