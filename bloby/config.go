@@ -23,6 +23,12 @@ type Config struct {
 	TransferTTL time.Duration
 	File        FileConfig
 	S3          S3Config
+	// ReferencedPrefixes lists the prefixes whose objects only have a purpose once
+	// a foreign key references them, such as an installer awaiting its package.
+	// Cleanup removes available objects under them that stayed unreferenced past
+	// the abandoned-upload age. Objects under other prefixes are kept, because a
+	// library users browse holds unreferenced objects on purpose.
+	ReferencedPrefixes []string
 }
 
 // FileConfig holds the settings for server-hosted storage transfers.
@@ -56,7 +62,12 @@ func New(ctx context.Context, registry Registry, cfg Config, logger *slog.Logger
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Service{registry: registry, backend: backend, logger: logger, transferTTL: cfg.TransferTTL}, nil
+	for _, prefix := range cfg.ReferencedPrefixes {
+		if !prefixPattern.MatchString(prefix) {
+			return nil, fmt.Errorf("%w: invalid referenced prefix %q", ErrInvalidInput, prefix)
+		}
+	}
+	return &Service{registry: registry, backend: backend, logger: logger, transferTTL: cfg.TransferTTL, referencedPrefixes: cfg.ReferencedPrefixes}, nil
 }
 
 func newBackend(ctx context.Context, cfg Config) (backend, error) {

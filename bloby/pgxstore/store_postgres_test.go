@@ -67,6 +67,56 @@ func TestRegistryDeletePreservesReferencedObject(t *testing.T) {
 	}
 }
 
+func TestRegistryListsUnreferencedAvailableObjectsByPrefix(t *testing.T) {
+	db, ctx := openTestDatabase(t)
+	registry := pgxstore.New(db)
+	// Consumers own the referencing tables, under any names and columns.
+	for _, table := range []string{
+		`CREATE TABLE packages (installer_object_id BIGINT REFERENCES storage_objects(id) ON DELETE RESTRICT)`,
+		`CREATE TABLE "Software Titles" ("Icon Object" BIGINT REFERENCES storage_objects(id) ON DELETE RESTRICT)`,
+	} {
+		if _, err := db.Exec(ctx, table); err != nil {
+			t.Fatalf("create reference table: %v", err)
+		}
+	}
+	publish := func(prefix, name string, age time.Duration) int64 {
+		t.Helper()
+		object, err := registry.CreatePending(ctx, prefix, name)
+		if err != nil {
+			t.Fatalf("create %s: %v", name, err)
+		}
+		if _, err := registry.MarkAvailable(ctx, object.ID, 7, "application/octet-stream", strings.Repeat("a", 64), fmt.Sprintf("_objects/%d/candidate", object.ID)); err != nil {
+			t.Fatalf("publish %s: %v", name, err)
+		}
+		if _, err := db.Exec(ctx, `UPDATE storage_objects SET available_at = now() - $2::interval WHERE id = $1`, object.ID, age.String()); err != nil {
+			t.Fatalf("backdate %s: %v", name, err)
+		}
+		return object.ID
+	}
+	abandoned := publish("munki/installers", "abandoned.pkg", 48*time.Hour)
+	attached := publish("munki/installers", "attached.pkg", 48*time.Hour)
+	publish("munki/installers", "recent.pkg", time.Hour)
+	icon := publish("munki/icons", "attached.png", 48*time.Hour)
+	publish("munki/library", "browsable.png", 48*time.Hour)
+	if _, err := registry.CreatePending(ctx, "munki/installers", "pending.pkg"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, `INSERT INTO packages VALUES ($1)`, attached); err != nil {
+		t.Fatalf("reference installer: %v", err)
+	}
+	if _, err := db.Exec(ctx, `INSERT INTO "Software Titles" VALUES ($1)`, icon); err != nil {
+		t.Fatalf("reference icon: %v", err)
+	}
+
+	objects, err := registry.ListUnreferenced(ctx, []string{"munki/installers", "munki/icons"}, time.Now().Add(-24*time.Hour), 100)
+	if err != nil {
+		t.Fatalf("list unreferenced objects: %v", err)
+	}
+	if len(objects) != 1 || objects[0].ID != abandoned {
+		t.Fatalf("unreferenced objects = %#v, want only %d", objects, abandoned)
+	}
+}
+
 func TestRegistryClaimsAbandonedPendingObjects(t *testing.T) {
 	db, ctx := openTestDatabase(t)
 	registry := pgxstore.New(db)

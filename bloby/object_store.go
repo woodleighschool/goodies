@@ -52,6 +52,9 @@ type Registry interface {
 	Delete(ctx context.Context, id int64) (*Object, error)
 	ClaimExpiredPending(ctx context.Context, updatedBefore, retryBefore time.Time, limit int) ([]Object, error)
 	DeleteExpiredPending(ctx context.Context, id int64) error
+	// ListUnreferenced returns available objects under the prefixes, finalized
+	// before the cutoff, that no foreign key references.
+	ListUnreferenced(ctx context.Context, prefixes []string, availableBefore time.Time, limit int) ([]Object, error)
 }
 
 // Key returns the immutable stored key, or an empty string while pending.
@@ -103,10 +106,11 @@ func (o Object) ETag() string {
 // Service owns object ingestion, delivery, deletion, and abandoned-upload cleanup.
 // Applications authorize access to objects; only Service publishes their bytes.
 type Service struct {
-	registry    Registry
-	backend     backend
-	logger      *slog.Logger
-	transferTTL time.Duration
+	registry           Registry
+	backend            backend
+	logger             *slog.Logger
+	transferTTL        time.Duration
+	referencedPrefixes []string
 }
 
 const stagingPrefix = "_staging/"

@@ -224,6 +224,46 @@ func TestServiceWriteAndCleanup(t *testing.T) {
 	}
 }
 
+func TestCleanupRemovesOnlyAbandonedObjectsUnderReferencedPrefixes(t *testing.T) {
+	registry := newMemoryRegistry()
+	service, err := New(t.Context(), registry, Config{Kind: KindFile, TransferTTL: time.Minute, ReferencedPrefixes: []string{"munki/installers"}, File: FileConfig{Root: t.TempDir(), BaseURL: "https://storage.invalid", CapabilityKeyHex: testCapabilityKeyHex}}, testLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	write := func(prefix, name string, age time.Duration) *Object {
+		t.Helper()
+		object, err := service.Write(t.Context(), prefix, name, "application/octet-stream", []byte(name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		registry.mu.Lock()
+		stored := registry.objects[object.ID]
+		available := stored.AvailableAt.Add(-age)
+		stored.AvailableAt = &available
+		registry.objects[object.ID] = stored
+		registry.mu.Unlock()
+		return object
+	}
+	abandoned := write("munki/installers", "abandoned.pkg", 48*time.Hour)
+	attached := write("munki/installers", "attached.pkg", 48*time.Hour)
+	recent := write("munki/installers", "recent.pkg", time.Hour)
+	library := write("munki/icons", "library.png", 48*time.Hour)
+	registry.referenced[attached.ID] = true
+	service.sweepExpiredUploads(t.Context())
+	if _, err := registry.GetByID(t.Context(), abandoned.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("abandoned installer: %v", err)
+	}
+	if reader, err := service.Open(t.Context(), *abandoned); err == nil {
+		_ = reader.Close()
+		t.Fatal("abandoned installer kept its bytes")
+	}
+	for name, object := range map[string]*Object{"attached": attached, "recent": recent, "library": library} {
+		if readAvailable(t, service, *object) == "" {
+			t.Fatalf("%s object was removed", name)
+		}
+	}
+}
+
 func TestFileAmbiguousPublishKeepsCommittedCandidate(t *testing.T) {
 	service, registry := newFileService(t)
 	object, action, err := service.BeginDirect(t.Context(), "documents/reports", "ambiguous.txt")

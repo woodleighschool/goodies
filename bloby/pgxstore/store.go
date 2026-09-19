@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgerrcode"
@@ -168,6 +169,29 @@ FROM candidates WHERE objects.id = candidates.id AND objects.available_at IS NUL
 RETURNING objects.id, objects.prefix, objects.filename, objects.content_type,
           objects.size_bytes, objects.sha256, objects.available_at,
           objects.multipart_upload_id, objects.storage_key, objects.created_at, objects.updated_at`, updatedBefore, retryBefore, limit)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowToStructByPos[bloby.Object])
+}
+
+// ListUnreferenced reads the referencing columns from the catalog, because the
+// tables that attach objects belong to the consumer.
+func (s *Store) ListUnreferenced(ctx context.Context, prefixes []string, availableBefore time.Time, limit int) ([]bloby.Object, error) {
+	rows, err := s.pool.Query(ctx, `SELECT format('NOT EXISTS (SELECT 1 FROM %s AS referrer WHERE referrer.%I = objects.id)', fk.conrelid::regclass, referrer.attname)
+FROM pg_constraint AS fk
+JOIN pg_attribute AS referrer ON referrer.attrelid = fk.conrelid AND referrer.attnum = fk.conkey[1]
+WHERE fk.contype = 'f' AND fk.confrelid = 'storage_objects'::regclass AND cardinality(fk.conkey) = 1`)
+	if err != nil {
+		return nil, err
+	}
+	conditions, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, err
+	}
+	conditions = append([]string{`prefix = ANY($1) AND available_at < $2 AND expired_at IS NULL`}, conditions...)
+	sql := objectSelectSQL + ` AS objects WHERE ` + strings.Join(conditions, " AND ") + ` ORDER BY id LIMIT $3`
+	rows, err = s.pool.Query(ctx, sql, prefixes, availableBefore, limit)
 	if err != nil {
 		return nil, err
 	}

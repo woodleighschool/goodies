@@ -51,6 +51,7 @@ func (s *Service) sweepExpiredUploads(ctx context.Context) {
 			s.logger.WarnContext(ctx, "abandoned upload cleanup failed", "object_id", objects[i].ID, "err", err)
 		}
 	}
+	s.sweepUnreferenced(ctx, before)
 	// Signed PUTs can finish after finalization or deletion. Sweep staging by
 	// age independently of registry rows so those late writes are also removed.
 	if err := s.backend.cleanupStaging(ctx, before); err != nil && !errors.Is(err, context.Canceled) {
@@ -90,6 +91,25 @@ func (s *Service) sweepExpiredUploads(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// sweepUnreferenced removes finalized objects whose owner never attached them, or
+// whose best-effort removal failed after a detaching mutation committed. The
+// registry's reference constraints still decide each delete, so an object
+// attached since the listing survives.
+func (s *Service) sweepUnreferenced(ctx context.Context, before time.Time) {
+	if len(s.referencedPrefixes) == 0 {
+		return
+	}
+	objects, err := s.registry.ListUnreferenced(ctx, s.referencedPrefixes, before, uploadCleanupBatchSize)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		s.logger.WarnContext(ctx, "unreferenced object cleanup failed", "operation", "list", "err", err)
+	}
+	ids := make([]int64, len(objects))
+	for i := range objects {
+		ids[i] = objects[i].ID
+	}
+	s.DeleteUnreferenced(ctx, ids...)
 }
 
 func pendingUploadMaxAge(transferTTL time.Duration) time.Duration {

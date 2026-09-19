@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"log/slog"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -17,13 +18,14 @@ type memoryRegistry struct {
 	nextID     int64
 	objects    map[int64]Object
 	expired    map[int64]time.Time
+	referenced map[int64]bool
 	beforeMark func() error
 	afterMark  func() error
 	getFailure error
 }
 
 func newMemoryRegistry() *memoryRegistry {
-	return &memoryRegistry{objects: make(map[int64]Object), expired: make(map[int64]time.Time)}
+	return &memoryRegistry{objects: make(map[int64]Object), expired: make(map[int64]time.Time), referenced: make(map[int64]bool)}
 }
 
 func (r *memoryRegistry) CreatePending(_ context.Context, prefix, filename string) (*Object, error) {
@@ -136,6 +138,9 @@ func (r *memoryRegistry) Delete(_ context.Context, id int64) (*Object, error) {
 	if err != nil {
 		return nil, err
 	}
+	if r.referenced[id] {
+		return nil, ErrConflict
+	}
 	delete(r.objects, id)
 	return object, nil
 }
@@ -181,6 +186,18 @@ func (r *memoryRegistry) ClaimExpiredPending(_ context.Context, before, retry ti
 			if len(result) == limit {
 				break
 			}
+		}
+	}
+	return result, nil
+}
+
+func (r *memoryRegistry) ListUnreferenced(_ context.Context, prefixes []string, before time.Time, limit int) ([]Object, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var result []Object
+	for id, object := range r.objects {
+		if object.Available() && object.AvailableAt.Before(before) && slices.Contains(prefixes, object.Prefix) && !r.referenced[id] && len(result) < limit {
+			result = append(result, object)
 		}
 	}
 	return result, nil
