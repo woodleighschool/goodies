@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.2.0](https://github.com/woodleighschool/goodies/compare/bloby/v1.1.0...bloby/v1.2.0) (2026-09-19)
+
+
+### Features
+
+* **bloby:** sweep unreferenced objects under referenced prefixes ([833b2cc](https://github.com/woodleighschool/goodies/commit/833b2ccb3dd04f99a8dffe39a03439d5b6711ce0))
+
+
+### Bug Fixes
+
+* **go:** update aws-sdk-go-v2 monorepo ([#34](https://github.com/woodleighschool/goodies/issues/34)) ([f11fdc1](https://github.com/woodleighschool/goodies/commit/f11fdc123bc8add9862d0dddb1a1847224f4e4aa))
+* **go:** update module github.com/aws/smithy-go (v1.28.1 → v1.28.2) ([#41](https://github.com/woodleighschool/goodies/issues/41)) ([2628340](https://github.com/woodleighschool/goodies/commit/26283407da3f01c0e8d2ccb2db8373dfec2eaaa4))
+
 ## [1.1.0](https://github.com/woodleighschool/goodies/compare/bloby/v1.0.0...bloby/v1.1.0) (2026-09-12)
 
 

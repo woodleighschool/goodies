@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/woodleighschool/goodies/compare/bloby-client/v1.1.0...bloby-client/v1.2.0) (2026-09-19)
+
+
+### Features
+
+* **npm:** update dependency @types/node (26.5.1 → 26.6.1) ([#38](https://github.com/woodleighschool/goodies/issues/38)) ([7d8a5ea](https://github.com/woodleighschool/goodies/commit/7d8a5eaae65c08cf9c6402c2281a0a8a31dd4224))
+
 ## [1.1.0](https://github.com/woodleighschool/goodies/compare/bloby-client/v1.0.0...bloby-client/v1.1.0) (2026-09-12)
 
 
