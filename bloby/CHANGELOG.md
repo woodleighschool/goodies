@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.1](https://github.com/woodleighschool/goodies/compare/bloby/v1.2.0...bloby/v1.2.1) (2026-09-25)
+
+
+### Bug Fixes
+
+* **go:** update aws-sdk-go-v2 monorepo ([#53](https://github.com/woodleighschool/goodies/issues/53)) ([033259d](https://github.com/woodleighschool/goodies/commit/033259d19bf98ca86f25bbee9cbe2743056565e5))
+* **go:** update module github.com/aws/aws-sdk-go-v2/service/s3 (v1.113.1 → v1.113.2) ([#48](https://github.com/woodleighschool/goodies/issues/48)) ([596f8bc](https://github.com/woodleighschool/goodies/commit/596f8bcf33b64531e3526009b64e4e000640eacf))
+
 ## [1.2.0](https://github.com/woodleighschool/goodies/compare/bloby/v1.1.0...bloby/v1.2.0) (2026-09-19)
 
 

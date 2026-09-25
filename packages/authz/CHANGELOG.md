@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.1](https://github.com/woodleighschool/goodies/compare/authz/v1.2.0...authz/v1.2.1) (2026-09-25)
+
+
+### Bug Fixes
+
+* **npm:** update dependency @types/node (26.6.1 → 26.6.2) ([#44](https://github.com/woodleighschool/goodies/issues/44)) ([403ffa5](https://github.com/woodleighschool/goodies/commit/403ffa5968930ae837d0f7afbbe5254de89a180f))
+* **npm:** update dependency tsx (4.23.13 → 4.23.15) ([#46](https://github.com/woodleighschool/goodies/issues/46)) ([96387e9](https://github.com/woodleighschool/goodies/commit/96387e91b90bdc0e5cfcae2e109c22717340fd70))
+
 ## [1.2.0](https://github.com/woodleighschool/goodies/compare/authz/v1.1.0...authz/v1.2.0) (2026-09-19)
 
 
