@@ -1,8 +1,10 @@
 {
   "ignorePatterns": [
+    "CHANGELOG.md",
+    ".release-please-manifest.json",
+    ".mise/locks/",
     ".mise/config.toml",
     "HELP.md",
-    "**/CHANGELOG.md",
     "pnpm-lock.yaml",
     "**/dist/**",
     "**/node_modules/**",
