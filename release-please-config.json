@@ -24,14 +24,13 @@
     { "type": "deps", "section": "Dependencies" }
   ],
   "packages": {
-    "auth": { "component": "auth", "release-type": "go", "initial-version": "0.1.0" },
-    "pglock": { "component": "pglock", "release-type": "go", "initial-version": "0.1.0" },
-    "bloby": { "component": "bloby", "release-type": "go", "initial-version": "0.1.0" },
-    "packages/authz": { "component": "authz", "release-type": "node", "initial-version": "0.1.0" },
+    "auth": { "component": "auth", "release-type": "go" },
+    "pglock": { "component": "pglock", "release-type": "go" },
+    "bloby": { "component": "bloby", "release-type": "go" },
+    "packages/authz": { "component": "authz", "release-type": "node" },
     "packages/bloby-client": {
       "component": "bloby-client",
-      "release-type": "node",
-      "initial-version": "0.1.0"
+      "release-type": "node"
     }
   }
 }
