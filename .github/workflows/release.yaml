@@ -1,9 +1,9 @@
 name: Release
 
 on:
-  workflow_dispatch:
-  push:
-    branches: [main]
+  release:
+    types:
+      - published
 
 permissions:
   contents: read
@@ -17,63 +17,42 @@ env:
   MISE_TASK_RUN_AUTO_INSTALL: "false"
 
 jobs:
-  release:
+  package:
     runs-on: ubuntu-26.04
-    permissions:
-      contents: write
-      issues: write
-      pull-requests: write
     outputs:
-      node-releases: ${{ steps.node-releases.outputs.releases }}
+      path: ${{ steps.package.outputs.path }}
     steps:
-      - name: Generate token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        id: app-token
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          client-id: ${{ secrets.BOT_CLIENT_ID }}
-          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
-          permission-contents: write
-          permission-issues: write
-          permission-pull-requests: write
-      - name: Release Please
-        uses: release-please-oss/release-please-action@0a385bebb853de7961b38d9a2d92fcba4eb7a23b # v6.0.3
-        id: release
-        with:
-          token: ${{ steps.app-token.outputs.token }}
-          config-file: release-please-config.json
-          manifest-file: .release-please-manifest.json
-      - name: Select released Node packages
-        id: node-releases
+          ref: ${{ github.event.release.tag_name }}
+          persist-credentials: false
+      - name: Find the Node package for this release
+        id: package
         env:
-          RELEASE_OUTPUTS: ${{ toJSON(steps.release.outputs) }}
+          TAG: ${{ github.event.release.tag_name }}
         run: |
-          releases=$(jq -c '. as $outputs | [
-            .paths_released | fromjson | .[]
-            | select(startswith("packages/"))
-            | {path: ., tag: $outputs[. + "--tag_name"]}
-          ]' <<<"$RELEASE_OUTPUTS")
-          echo "releases=$releases" >> "$GITHUB_OUTPUT"
+          path=$(jq -r --arg component "${TAG%/v*}" '.packages | to_entries[]
+            | select(.value.component == $component and .value["release-type"] == "node")
+            | .key' release-please-config.json)
+          echo "path=${path}" >> "$GITHUB_OUTPUT"
 
   publish-node:
-    needs: release
-    if: ${{ needs.release.outputs.node-releases != '[]' }}
+    needs: package
+    if: ${{ needs.package.outputs.path != '' }}
     runs-on: ubuntu-26.04
     permissions:
       contents: read
       id-token: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJSON(needs.release.outputs.node-releases) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ matrix.tag }}
+          ref: ${{ github.event.release.tag_name }}
           persist-credentials: false
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
+          cache: false
           experimental: true
           install_args: --locked node pnpm
       - run: pnpm install --frozen-lockfile
       - run: npm publish
-        working-directory: ${{ matrix.path }}
+        working-directory: ${{ needs.package.outputs.path }}
