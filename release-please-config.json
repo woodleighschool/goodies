@@ -4,30 +4,27 @@
   "group-pull-request-title-pattern": "chore(release): ${branch}",
   "bump-minor-pre-major": true,
   "bump-patch-for-minor-pre-major": true,
-  "always-update": true,
   "include-component-in-tag": true,
   "include-v-in-tag": true,
   "tag-separator": "/",
   "separate-pull-requests": false,
-  "changelog-sections": [
-    { "type": "feat", "section": "Features" },
-    { "type": "fix", "section": "Bug Fixes" },
-    { "type": "perf", "section": "Performance Improvements" },
-    { "type": "refactor", "section": "Code Refactoring" },
-    { "type": "revert", "section": "Reverts" },
-    { "type": "docs", "section": "Documentation" },
-    { "type": "style", "section": "Styles" },
-    { "type": "test", "section": "Tests" },
-    { "type": "build", "section": "Build System" },
-    { "type": "ci", "section": "Continuous Integration" },
-    { "type": "chore", "section": "Miscellaneous Chores" },
-    { "type": "deps", "section": "Dependencies" }
-  ],
   "packages": {
-    "auth": { "component": "auth", "release-type": "go" },
-    "pglock": { "component": "pglock", "release-type": "go" },
-    "bloby": { "component": "bloby", "release-type": "go" },
-    "packages/authz": { "component": "authz", "release-type": "node" },
+    "auth": {
+      "component": "auth",
+      "release-type": "go"
+    },
+    "pglock": {
+      "component": "pglock",
+      "release-type": "go"
+    },
+    "bloby": {
+      "component": "bloby",
+      "release-type": "go"
+    },
+    "packages/authz": {
+      "component": "authz",
+      "release-type": "node"
+    },
     "packages/bloby-client": {
       "component": "bloby-client",
       "release-type": "node"
