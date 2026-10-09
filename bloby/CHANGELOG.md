@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.3.0](https://github.com/woodleighschool/goodies/compare/bloby/v1.2.0...bloby/v1.3.0) (2026-10-09)
+
+
+### Features
+
+* **go:** update module github.com/aws/aws-sdk-go-v2/service/s3 (v1.113.4 → v1.114.0) ([#62](https://github.com/woodleighschool/goodies/issues/62)) ([5337969](https://github.com/woodleighschool/goodies/commit/5337969742bc827a58286aa90f4418f373d9b1c9))
+
+
+### Bug Fixes
+
+* **bloby:** retain objects owned by active finalization ([493c6b3](https://github.com/woodleighschool/goodies/commit/493c6b3a808165b5ab7cb4e841c897c7df016c66))
+* **go:** update aws-sdk-go-v2 monorepo ([#53](https://github.com/woodleighschool/goodies/issues/53)) ([033259d](https://github.com/woodleighschool/goodies/commit/033259d19bf98ca86f25bbee9cbe2743056565e5))
+* **go:** update aws-sdk-go-v2 monorepo ([#76](https://github.com/woodleighschool/goodies/issues/76)) ([ecd82ec](https://github.com/woodleighschool/goodies/commit/ecd82ec4d1aea80c3073c2d2ed37feae0dc48f73))
+* **go:** update aws-sdk-go-v2 monorepo ([#84](https://github.com/woodleighschool/goodies/issues/84)) ([f5590a1](https://github.com/woodleighschool/goodies/commit/f5590a1a7079f39ce53aa95a1108d7bf16e132ef))
+* **go:** update module github.com/aws/aws-sdk-go-v2/service/s3 (v1.113.1 → v1.113.2) ([#48](https://github.com/woodleighschool/goodies/issues/48)) ([596f8bc](https://github.com/woodleighschool/goodies/commit/596f8bcf33b64531e3526009b64e4e000640eacf))
+* **go:** update module github.com/aws/smithy-go (v1.28.2 → v1.28.3) ([#75](https://github.com/woodleighschool/goodies/issues/75)) ([cfda656](https://github.com/woodleighschool/goodies/commit/cfda656fecd15ac59f4f168f37ada503d62e0c8f))
+* **go:** update module github.com/aws/smithy-go (v1.28.3 → v1.28.4) ([#77](https://github.com/woodleighschool/goodies/issues/77)) ([ee2d0f3](https://github.com/woodleighschool/goodies/commit/ee2d0f3385e6f5f173bdbbb32aa8d674bfeb3d91))
+
 ## [1.2.0](https://github.com/woodleighschool/goodies/compare/bloby/v1.1.0...bloby/v1.2.0) (2026-09-19)
 
 
