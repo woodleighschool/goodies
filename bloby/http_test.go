@@ -2,6 +2,7 @@ package bloby
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -17,7 +18,7 @@ func TestBlobGetServesBytesAndRanges(t *testing.T) {
 	t.Parallel()
 	store := newTransferTestFileStore(t)
 	const key = "munki/packages/1/Installer.pkg"
-	if err := store.Put(t.Context(), key, strings.NewReader("0123456789"), putOptions{}); err != nil {
+	if err := store.Put(t.Context(), key, strings.NewReader("0123456789"), declare("0123456789"), putOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	server := httptest.NewServer(newBlobTestRouter(store))
@@ -71,7 +72,7 @@ func TestBlobGetAcceptsEquivalentEscapingForSignedKey(t *testing.T) {
 
 	store := newTransferTestFileStore(t)
 	const key = "munki/packages/38/Zoom-7.1.5 (84650).pkg"
-	if err := store.Put(t.Context(), key, strings.NewReader("zoom"), putOptions{}); err != nil {
+	if err := store.Put(t.Context(), key, strings.NewReader("zoom"), declare("zoom"), putOptions{}); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 	token := signBlobCapability(t, capabilityClaims{
@@ -134,55 +135,113 @@ func TestBlobGetRejectsInvalidExpiredAndMissingObjects(t *testing.T) {
 	}
 }
 
-func TestBlobPutWritesAndRejectsWrongOperation(t *testing.T) {
+func TestBlobPutAdmitsOnlyDeclaredBytes(t *testing.T) {
 	t.Parallel()
-	store := newTransferTestFileStore(t)
+	store := newTestFileStore(t)
 	router := newBlobTestRouter(store)
-	key := "munki/icons/7/icon.png"
-	putToken := signBlobCapability(t, capabilityClaims{
-		Op:  capabilityPut,
-		Key: key,
-		Exp: time.Now().Add(time.Minute).Unix(),
+	const key = "_objects/7/icon.png"
+	const declared = "png bytes"
+	content := declare(declared)
+	token := signBlobCapability(t, capabilityClaims{
+		Op:        capabilityPut,
+		Key:       key,
+		Exp:       time.Now().Add(time.Minute).Unix(),
+		SizeBytes: content.SizeBytes,
+		SHA256:    content.SHA256,
 	})
+	put := func(body string) int {
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodPut, "/storage/"+key+"?cap="+token, strings.NewReader(body)))
+		return rec.Code
+	}
+	stored := func() (string, bool) {
+		reader, err := store.Open(t.Context(), key)
+		if errors.Is(err, ErrObjectNotFound) {
+			return "", false
+		}
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		defer func() { _ = reader.Close() }()
+		body, err := io.ReadAll(reader)
+		if err != nil {
+			t.Fatalf("ReadAll: %v", err)
+		}
+		return string(body), true
+	}
+	refused := map[string]string{
+		"other bytes of the declared length": "PNG BYTES",
+		"short body":                         "png",
+		"oversized body":                     "png bytes and more",
+		"empty body":                         "",
+	}
 
+	for name, body := range refused {
+		if status := put(body); status != http.StatusBadRequest {
+			t.Fatalf("%s status = %d, want %d", name, status, http.StatusBadRequest)
+		}
+		if body, ok := stored(); ok {
+			t.Fatalf("%s stored %q at the key", name, body)
+		}
+	}
+	path, err := store.resolve(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if leftovers, err := os.ReadDir(filepath.Dir(path)); err != nil || len(leftovers) != 0 {
+		t.Fatalf("refused uploads left %v beside the key: %v", leftovers, err)
+	}
+
+	// An oversized body is refused without being read to its end.
+	oversized := &countingReader{reader: strings.NewReader(strings.Repeat("x", 1<<20))}
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequestWithContext(t.Context(),
-		http.MethodPut,
-		"/storage/munki/icons/7/icon.png?cap="+putToken,
-		bytes.NewReader([]byte("png bytes")))
-
-	router.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want %d; body = %q", rec.Code, http.StatusNoContent, rec.Body.String())
-	}
-	reader, _, err := store.Open(t.Context(), key)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	got, err := io.ReadAll(reader)
-	_ = reader.Close()
-	if err != nil {
-		t.Fatalf("ReadAll: %v", err)
-	}
-	if string(got) != "png bytes" {
-		t.Fatalf("stored bytes = %q, want png bytes", got)
+	router.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodPut, "/storage/"+key+"?cap="+token, oversized))
+	if rec.Code != http.StatusBadRequest || oversized.read > content.SizeBytes+1 {
+		t.Fatalf("oversized body: status %d after reading %d bytes of a %d byte declaration", rec.Code, oversized.read, content.SizeBytes)
 	}
 
-	getToken := signBlobCapability(t, capabilityClaims{
-		Op:  capabilityGet,
-		Key: key,
-		Exp: time.Now().Add(time.Minute).Unix(),
-	})
-	rec = httptest.NewRecorder()
-	req = httptest.NewRequestWithContext(t.Context(),
-		http.MethodPut,
-		"/storage/munki/icons/7/icon.png?cap="+getToken,
-		strings.NewReader("wrong"))
+	if status := put(declared); status != http.StatusNoContent {
+		t.Fatalf("declared bytes status = %d, want %d", status, http.StatusNoContent)
+	}
+	for name, body := range refused {
+		if status := put(body); status != http.StatusBadRequest {
+			t.Fatalf("%s after upload status = %d, want %d", name, status, http.StatusBadRequest)
+		}
+		if body, _ := stored(); body != declared {
+			t.Fatalf("%s replaced the stored bytes with %q", name, body)
+		}
+	}
+}
 
-	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("wrong op status = %d, want %d", rec.Code, http.StatusUnauthorized)
+func TestBlobPutRejectsCapabilitiesThatAdmitNoContent(t *testing.T) {
+	t.Parallel()
+	store := newTestFileStore(t)
+	router := newBlobTestRouter(store)
+	const key = "_objects/7/icon.png"
+	content := declare("png bytes")
+	expires := time.Now().Add(time.Minute).Unix()
+	for name, claims := range map[string]capabilityClaims{
+		"read capability":     {Op: capabilityGet, Key: key, Exp: expires},
+		"no declaration":      {Op: capabilityPut, Key: key, Exp: expires},
+		"malformed SHA-256":   {Op: capabilityPut, Key: key, Exp: expires, SizeBytes: content.SizeBytes, SHA256: "invalid"},
+		"negative size":       {Op: capabilityPut, Key: key, Exp: expires, SizeBytes: -1, SHA256: content.SHA256},
+		"another object key":  {Op: capabilityPut, Key: "_objects/8/icon.png", Exp: expires, SizeBytes: content.SizeBytes, SHA256: content.SHA256},
+		"expired declaration": {Op: capabilityPut, Key: key, Exp: time.Now().Add(-time.Minute).Unix(), SizeBytes: content.SizeBytes, SHA256: content.SHA256},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodPut, "/storage/"+key+"?cap="+signBlobCapability(t, claims), strings.NewReader("png bytes")))
+			want := http.StatusUnauthorized
+			if claims.Exp < time.Now().Unix() {
+				want = http.StatusGone
+			}
+			if rec.Code != want {
+				t.Fatalf("status = %d, want %d", rec.Code, want)
+			}
+			if _, err := store.Open(t.Context(), key); !errors.Is(err, ErrObjectNotFound) {
+				t.Fatalf("refused capability stored bytes: %v", err)
+			}
+		})
 	}
 }
 
@@ -270,6 +329,17 @@ func TestTransferRoutesAreNotMountedForS3(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
 	}
+}
+
+type countingReader struct {
+	reader io.Reader
+	read   int64
+}
+
+func (r *countingReader) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	r.read += int64(n)
+	return n, err
 }
 
 func newBlobTestRouter(store backend) http.Handler {

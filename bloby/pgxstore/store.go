@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	objectColumnsSQL = `id, prefix, filename, content_type, size_bytes, sha256, available_at, multipart_upload_id, storage_key, created_at, updated_at`
+	objectColumnsSQL = `id, prefix, filename, content_type, size_bytes, sha256, crc64nvme, available_at, multipart_upload_id, storage_key, created_at, updated_at`
 	objectSelectSQL  = `SELECT ` + objectColumnsSQL + ` FROM storage_objects`
 )
 
@@ -32,24 +32,25 @@ func New(pool *pgxpool.Pool) *Store {
 	return &Store{pool: pool}
 }
 
-func (s *Store) CreatePending(ctx context.Context, prefix, filename string) (*bloby.Object, error) {
-	const sql = `INSERT INTO storage_objects (prefix, filename) VALUES (@prefix, @filename) RETURNING ` + objectColumnsSQL
-	object, err := s.getObject(ctx, sql, pgx.NamedArgs{"prefix": prefix, "filename": filename})
+func (s *Store) CreatePending(ctx context.Context, prefix, filename string, content bloby.Content) (*bloby.Object, error) {
+	const sql = `INSERT INTO storage_objects (prefix, filename, size_bytes, sha256, crc64nvme)
+VALUES (@prefix, @filename, @size_bytes, @sha256, @crc64nvme) RETURNING ` + objectColumnsSQL
+	object, err := s.getObject(ctx, sql, pgx.NamedArgs{
+		"prefix": prefix, "filename": filename,
+		"size_bytes": content.SizeBytes, "sha256": content.SHA256, "crc64nvme": content.CRC64NVME,
+	})
 	if err != nil {
 		return nil, mutationError(err)
 	}
 	return &object, nil
 }
 
-func (s *Store) MarkAvailable(ctx context.Context, id, sizeBytes int64, contentType, sha256sum, storageKey string) (*bloby.Object, error) {
+func (s *Store) MarkAvailable(ctx context.Context, id int64, contentType, storageKey string) (*bloby.Object, error) {
 	const sql = `UPDATE storage_objects
-SET size_bytes = @size_bytes, sha256 = @sha256, content_type = @content_type, storage_key = @storage_key,
-    available_at = now(), updated_at = now()
+SET content_type = @content_type, storage_key = @storage_key, available_at = now(), updated_at = now()
 WHERE id = @id AND available_at IS NULL AND expired_at IS NULL
 RETURNING ` + objectColumnsSQL
-	object, err := s.getObject(ctx, sql, pgx.NamedArgs{
-		"id": id, "size_bytes": &sizeBytes, "sha256": &sha256sum, "content_type": contentType, "storage_key": storageKey,
-	})
+	object, err := s.getObject(ctx, sql, pgx.NamedArgs{"id": id, "content_type": contentType, "storage_key": storageKey})
 	if errors.Is(err, bloby.ErrNotFound) {
 		current, getErr := s.GetByID(ctx, id)
 		if getErr != nil {
@@ -158,21 +159,16 @@ func (s *Store) Delete(ctx context.Context, id int64) (*bloby.Object, error) {
 }
 
 func (s *Store) ClaimExpiredPending(ctx context.Context, updatedBefore, retryBefore time.Time, limit int) ([]bloby.Object, error) {
-	conditions, err := s.referenceConditions(ctx)
-	if err != nil {
-		return nil, err
-	}
-	conditions = append(conditions, `available_at IS NULL AND (expired_at < $2 OR (expired_at IS NULL AND updated_at < $1))`)
 	rows, err := s.pool.Query(ctx, `WITH candidates AS (
-    SELECT id FROM storage_objects AS objects
-    WHERE `+strings.Join(conditions, " AND ")+`
+    SELECT id FROM storage_objects
+    WHERE available_at IS NULL AND (expired_at < $2 OR (expired_at IS NULL AND updated_at < $1))
     ORDER BY (expired_at IS NULL), COALESCE(expired_at, updated_at), id
     LIMIT $3 FOR UPDATE SKIP LOCKED
 )
 UPDATE storage_objects AS objects SET expired_at = now()
 FROM candidates WHERE objects.id = candidates.id AND objects.available_at IS NULL
 RETURNING objects.id, objects.prefix, objects.filename, objects.content_type,
-          objects.size_bytes, objects.sha256, objects.available_at,
+          objects.size_bytes, objects.sha256, objects.crc64nvme, objects.available_at,
           objects.multipart_upload_id, objects.storage_key, objects.created_at, objects.updated_at`, updatedBefore, retryBefore, limit)
 	if err != nil {
 		return nil, err
@@ -183,26 +179,10 @@ RETURNING objects.id, objects.prefix, objects.filename, objects.content_type,
 // ListUnreferenced reads the referencing columns from the catalog, because the
 // tables that attach objects belong to the consumer.
 func (s *Store) ListUnreferenced(ctx context.Context, prefixes []string, availableBefore time.Time, limit int) ([]bloby.Object, error) {
-	conditions, err := s.referenceConditions(ctx)
-	if err != nil {
-		return nil, err
-	}
-	conditions = append([]string{`prefix = ANY($1) AND available_at < $2 AND expired_at IS NULL`}, conditions...)
-	sql := objectSelectSQL + ` AS objects WHERE ` + strings.Join(conditions, " AND ") + ` ORDER BY id LIMIT $3`
-	rows, err := s.pool.Query(ctx, sql, prefixes, availableBefore, limit)
-	if err != nil {
-		return nil, err
-	}
-	return pgx.CollectRows(rows, pgx.RowToStructByPos[bloby.Object])
-}
-
-// referenceConditions finds ownership references. Cascading and nullable-on-delete
-// metadata belongs to the object and does not retain its bytes.
-func (s *Store) referenceConditions(ctx context.Context) ([]string, error) {
 	rows, err := s.pool.Query(ctx, `SELECT format('NOT EXISTS (SELECT 1 FROM %s AS referrer WHERE referrer.%I = objects.id)', fk.conrelid::regclass, referrer.attname)
 FROM pg_constraint AS fk
 JOIN pg_attribute AS referrer ON referrer.attrelid = fk.conrelid AND referrer.attnum = fk.conkey[1]
-WHERE fk.contype = 'f' AND fk.confrelid = 'storage_objects'::regclass AND cardinality(fk.conkey) = 1 AND fk.confdeltype IN ('a', 'r')`)
+WHERE fk.contype = 'f' AND fk.confrelid = 'storage_objects'::regclass AND cardinality(fk.conkey) = 1`)
 	if err != nil {
 		return nil, err
 	}
@@ -210,7 +190,13 @@ WHERE fk.contype = 'f' AND fk.confrelid = 'storage_objects'::regclass AND cardin
 	if err != nil {
 		return nil, err
 	}
-	return conditions, nil
+	conditions = append([]string{`prefix = ANY($1) AND available_at < $2 AND expired_at IS NULL`}, conditions...)
+	sql := objectSelectSQL + ` AS objects WHERE ` + strings.Join(conditions, " AND ") + ` ORDER BY id LIMIT $3`
+	rows, err = s.pool.Query(ctx, sql, prefixes, availableBefore, limit)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowToStructByPos[bloby.Object])
 }
 
 func (s *Store) DeleteExpiredPending(ctx context.Context, id int64) error {

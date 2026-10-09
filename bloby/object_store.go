@@ -13,8 +13,9 @@ import (
 	"unicode/utf8"
 )
 
-// Object is one pending or available blob. StorageKey identifies the immutable
-// bytes selected at publication; pending objects have no stored key.
+// Object is one pending or available blob. SizeBytes, SHA256 and CRC64NVME are
+// the uploader's declaration while pending and what storage holds once
+// available. Objects published before declarations carry no CRC64NVME.
 type Object struct {
 	ID                int64
 	Prefix            string
@@ -22,6 +23,7 @@ type Object struct {
 	ContentType       string
 	SizeBytes         *int64
 	SHA256            *string
+	CRC64NVME         *string
 	AvailableAt       *time.Time
 	MultipartUploadID *string
 	StorageKey        *string
@@ -38,10 +40,10 @@ type ListOptions struct {
 // Registry persists Bloby's object lifecycle. Implementations must preserve
 // atomic state transitions and return Bloby's sentinel errors.
 type Registry interface {
-	CreatePending(ctx context.Context, prefix, filename string) (*Object, error)
-	// MarkAvailable publishes metadata once. Retries return the original available
-	// object unchanged; expired and missing objects return ErrNotFound.
-	MarkAvailable(ctx context.Context, id, sizeBytes int64, contentType, sha256, storageKey string) (*Object, error)
+	CreatePending(ctx context.Context, prefix, filename string, content Content) (*Object, error)
+	// MarkAvailable publishes a pending object once. Retries return the original
+	// available object unchanged; expired and missing objects return ErrNotFound.
+	MarkAvailable(ctx context.Context, id int64, contentType, storageKey string) (*Object, error)
 	// RefreshPending only touches active pending rows; all others return ErrNotFound.
 	RefreshPending(ctx context.Context, id int64) (*Object, error)
 	RecordMultipartUploadID(ctx context.Context, id int64, uploadID string) error
@@ -65,12 +67,29 @@ func (o Object) Key() string {
 	return *o.StorageKey
 }
 
+// key returns where the object's bytes live. An object keeps one key for life,
+// so its upload capabilities can only address the bytes it declared.
+func (o Object) key() string {
+	if o.StorageKey != nil {
+		return *o.StorageKey
+	}
+	return fmt.Sprintf("%s%d/%s", objectPrefix, o.ID, o.Filename)
+}
+
+// content returns the declaration recorded when the upload began.
+func (o Object) content() (Content, error) {
+	if o.SizeBytes == nil || o.SHA256 == nil || o.CRC64NVME == nil {
+		return Content{}, fmt.Errorf("%w: object has no declared content", ErrInvalidInput)
+	}
+	return Content{SizeBytes: *o.SizeBytes, SHA256: *o.SHA256, CRC64NVME: *o.CRC64NVME}, nil
+}
+
 // Available reports whether the bytes have been finalized.
 func (o Object) Available() bool {
 	return o.AvailableAt != nil
 }
 
-// SHA256Value returns the recorded hash, or "" while the object is pending.
+// SHA256Value returns the recorded hash, or "" when none is recorded.
 func (o Object) SHA256Value() string {
 	if o.SHA256 == nil {
 		return ""
@@ -78,7 +97,7 @@ func (o Object) SHA256Value() string {
 	return *o.SHA256
 }
 
-// SizeBytesValue returns the recorded byte length, or 0 while the object is pending.
+// SizeBytesValue returns the recorded byte length, or 0 when none is recorded.
 func (o Object) SizeBytesValue() int64 {
 	if o.SizeBytes == nil {
 		return 0
@@ -95,7 +114,7 @@ func (o Object) SizeKBValue() int64 {
 	return (sizeBytes + 1023) / 1024
 }
 
-// ETag returns the SHA-256 entity tag for an available object.
+// ETag returns the SHA-256 entity tag.
 func (o Object) ETag() string {
 	if o.SHA256 == nil || *o.SHA256 == "" {
 		return ""
@@ -113,15 +132,11 @@ type Service struct {
 	referencedPrefixes []string
 }
 
-const stagingPrefix = "_staging/"
-const candidatePrefix = "_objects/"
+// objectPrefix holds every object's bytes, each under its registry ID.
+const objectPrefix = "_objects/"
 
-func (o Object) stagingKey() string {
-	return fmt.Sprintf("%s%s/%d/%s", stagingPrefix, o.Prefix, o.ID, o.Filename)
-}
-
-// createPending reserves an object in the registry without classifying content.
-func (s *Service) createPending(ctx context.Context, prefix, filename string) (*Object, error) {
+// createPending reserves an object for bytes matching content.
+func (s *Service) createPending(ctx context.Context, prefix, filename string, content Content) (*Object, error) {
 	if !prefixPattern.MatchString(prefix) {
 		return nil, fmt.Errorf("%w: invalid storage prefix %q", ErrInvalidInput, prefix)
 	}
@@ -129,26 +144,19 @@ func (s *Service) createPending(ctx context.Context, prefix, filename string) (*
 	if err := validateUploadFilename(filename); err != nil {
 		return nil, err
 	}
-	return s.registry.CreatePending(ctx, prefix, filename)
+	if err := content.validate(); err != nil {
+		return nil, err
+	}
+	return s.registry.CreatePending(ctx, prefix, filename, content)
 }
 
-// markAvailable records metadata derived from sealed bytes.
-func (s *Service) markAvailable(
-	ctx context.Context,
-	id int64,
-	sizeBytes int64,
-	contentType string,
-	sha256sum string,
-	storageKey string,
-) (*Object, error) {
+// markAvailable publishes an object whose stored bytes match its declaration.
+func (s *Service) markAvailable(ctx context.Context, object *Object, contentType string) (*Object, error) {
 	contentType, err := normalizeContentType(contentType)
 	if err != nil {
 		return nil, err
 	}
-	if err := validateAvailableObjectMetadata(sizeBytes, sha256sum); err != nil {
-		return nil, err
-	}
-	return s.registry.MarkAvailable(ctx, id, sizeBytes, contentType, sha256sum, storageKey)
+	return s.registry.MarkAvailable(ctx, object.ID, contentType, object.key())
 }
 
 // GetByID returns one object.
@@ -201,17 +209,13 @@ func (s *Service) removeBytes(ctx context.Context, object *Object) error {
 	var abortErr error
 	if object.MultipartUploadID != nil {
 		if backend, ok := s.backend.(multipartBackend); ok {
-			abortErr = backend.AbortMultipartUpload(ctx, object.stagingKey(), *object.MultipartUploadID)
+			abortErr = backend.AbortMultipartUpload(ctx, object.key(), *object.MultipartUploadID)
 			if errors.Is(abortErr, ErrMultipartUploadNotFound) {
 				abortErr = nil
 			}
 		}
 	}
-	var finalErr error
-	if object.StorageKey != nil {
-		finalErr = s.backend.Delete(ctx, *object.StorageKey)
-	}
-	return errors.Join(abortErr, s.backend.Delete(ctx, object.stagingKey()), finalErr)
+	return errors.Join(abortErr, s.backend.Delete(ctx, object.key()))
 }
 
 func normalizeContentType(value string) (string, error) {
@@ -225,15 +229,6 @@ func normalizeContentType(value string) (string, error) {
 	}
 	return value, nil
 }
-
-func validateAvailableObjectMetadata(sizeBytes int64, sha256sum string) error {
-	if sizeBytes < 0 || !sha256Pattern.MatchString(sha256sum) {
-		return fmt.Errorf("%w: incomplete storage object metadata", ErrInvalidInput)
-	}
-	return nil
-}
-
-var sha256Pattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 var prefixPattern = regexp.MustCompile(`^[a-z0-9]+(/[a-z0-9]+)*$`)
 

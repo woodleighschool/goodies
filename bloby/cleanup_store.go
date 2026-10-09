@@ -3,7 +3,6 @@ package bloby
 import (
 	"context"
 	"errors"
-	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -53,45 +52,99 @@ func (s *Service) sweepExpiredUploads(ctx context.Context) {
 		}
 	}
 	s.sweepUnreferenced(ctx, before)
-	// Signed PUTs can finish after finalization or deletion. Sweep staging by
-	// age independently of registry rows so those late writes are also removed.
-	if err := s.backend.cleanupStaging(ctx, before, s.retainPendingBytes); err != nil && !errors.Is(err, context.Canceled) {
-		s.logger.WarnContext(ctx, "abandoned upload cleanup failed", "operation", "staging", "err", err)
-	}
-	keys, err := s.backend.expiredCandidates(ctx, before)
+	s.sweepOrphans(ctx, before)
+}
+
+// sweepOrphans removes bytes that no registry object owns. A signed upload can
+// land after its object was deleted, and a failed delete can strand bytes.
+func (s *Service) sweepOrphans(ctx context.Context, before time.Time) {
+	keys, err := s.backend.expiredObjects(ctx, before)
 	if err != nil && !errors.Is(err, context.Canceled) {
-		s.logger.WarnContext(ctx, "abandoned upload cleanup failed", "operation", "candidates", "err", err)
+		s.logger.WarnContext(ctx, "orphan cleanup failed", "operation", "list objects", "err", err)
 	}
 	for batch := range slices.Chunk(keys, uploadCleanupBatchSize) {
-		candidateIDs := make(map[string]int64, len(batch))
-		ids := make([]int64, 0, len(batch))
-		for _, key := range batch {
-			idText, _, ok := strings.Cut(strings.TrimPrefix(key, candidatePrefix), "/")
-			id, err := strconv.ParseInt(idText, 10, 64)
-			if ok && err == nil {
-				candidateIDs[key] = id
-				ids = append(ids, id)
-			}
-		}
-		if len(ids) == 0 {
-			continue
-		}
-		objects, err := s.registry.ListByIDs(ctx, ids)
+		owners, err := s.owners(ctx, batch)
 		if err != nil {
 			if !errors.Is(err, context.Canceled) {
-				s.logger.WarnContext(ctx, "candidate cleanup could not resolve objects", "err", err)
+				s.logger.WarnContext(ctx, "orphan cleanup could not resolve objects", "err", err)
 			}
 			continue
 		}
-		for key, id := range candidateIDs {
-			if object, ok := objects[id]; ok && (!object.Available() || object.Key() == key) {
+		for _, key := range batch {
+			id, ok := ownerID(key)
+			if !ok {
+				continue
+			}
+			if owner, exists := owners[id]; exists && owner.key() == key {
 				continue
 			}
 			if err := s.backend.Delete(ctx, key); err != nil && !errors.Is(err, context.Canceled) {
-				s.logger.WarnContext(ctx, "candidate cleanup failed", "key", key, "err", err)
+				s.logger.WarnContext(ctx, "orphan cleanup failed", "key", key, "err", err)
 			}
 		}
 	}
+
+	backend, ok := s.backend.(multipartBackend)
+	if !ok {
+		return
+	}
+	uploads, err := backend.expiredUploads(ctx, before)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		s.logger.WarnContext(ctx, "orphan cleanup failed", "operation", "list uploads", "err", err)
+	}
+	for batch := range slices.Chunk(uploads, uploadCleanupBatchSize) {
+		keys := make([]string, len(batch))
+		for i, upload := range batch {
+			keys[i] = upload.Key
+		}
+		owners, err := s.owners(ctx, keys)
+		if err != nil {
+			if !errors.Is(err, context.Canceled) {
+				s.logger.WarnContext(ctx, "orphan cleanup could not resolve uploads", "err", err)
+			}
+			continue
+		}
+		for _, upload := range batch {
+			if id, ok := ownerID(upload.Key); ok {
+				owner, exists := owners[id]
+				if exists && owner.MultipartUploadID != nil && *owner.MultipartUploadID == upload.ID {
+					continue
+				}
+			}
+			err := backend.AbortMultipartUpload(ctx, upload.Key, upload.ID)
+			if err != nil && !errors.Is(err, ErrMultipartUploadNotFound) && !errors.Is(err, context.Canceled) {
+				s.logger.WarnContext(ctx, "orphan cleanup failed", "key", upload.Key, "err", err)
+			}
+		}
+	}
+}
+
+// owners returns the registry objects named by the keys' ID segments.
+func (s *Service) owners(ctx context.Context, keys []string) (map[int64]Object, error) {
+	ids := make([]int64, 0, len(keys))
+	for _, key := range keys {
+		if id, ok := ownerID(key); ok {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	return s.registry.ListByIDs(ctx, ids)
+}
+
+// ownerID parses the registry ID that leads every object key.
+func ownerID(key string) (int64, bool) {
+	rest, ok := strings.CutPrefix(key, objectPrefix)
+	if !ok {
+		return 0, false
+	}
+	idText, _, ok := strings.Cut(rest, "/")
+	if !ok {
+		return 0, false
+	}
+	id, err := strconv.ParseInt(idText, 10, 64)
+	return id, err == nil
 }
 
 // sweepUnreferenced removes finalized objects whose owner never attached them, or
@@ -118,34 +171,4 @@ func pendingUploadMaxAge(transferTTL time.Duration) time.Duration {
 		return transferTTL + time.Hour
 	}
 	return minimumPendingUploadMaxAge
-}
-
-// retainPendingBytes preserves uploads until the registry has claimed their
-// expiry. Pending objects can be retained by application-owned work.
-func (s *Service) retainPendingBytes(ctx context.Context, key string) (bool, error) {
-	var idText string
-	switch {
-	case strings.HasPrefix(key, stagingPrefix):
-		parts := strings.Split(key, "/")
-		if len(parts) < 3 {
-			return false, nil
-		}
-		idText = parts[len(parts)-2]
-	case strings.HasPrefix(key, candidatePrefix):
-		idText, _, _ = strings.Cut(strings.TrimPrefix(key, candidatePrefix), "/")
-	default:
-		return false, nil
-	}
-	id, err := strconv.ParseInt(idText, 10, 64)
-	if err != nil {
-		return false, fmt.Errorf("parse storage object ID: %w", err)
-	}
-	object, err := s.registry.GetByID(ctx, id)
-	if errors.Is(err, ErrNotFound) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return !object.Available(), nil
 }

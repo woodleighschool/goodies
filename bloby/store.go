@@ -15,19 +15,22 @@ var ErrObjectNotFound = errors.New("storage object not found")
 // ErrMultipartUploadNotFound reports that a provider no longer has an upload ID.
 var ErrMultipartUploadNotFound = errors.New("storage multipart upload not found")
 
-// backend is a configured storage backend. All runtime backends can read/write
-// bytes and mint direct transfer URLs.
+// backend is a configured storage backend. Every write names the content it
+// carries, and the backend refuses bytes that differ from it.
 type backend interface {
-	Open(ctx context.Context, key string) (io.ReadCloser, objectInfo, error)
-	Put(ctx context.Context, key string, r io.Reader, opts putOptions) error
+	Open(ctx context.Context, key string) (io.ReadCloser, error)
+	Put(ctx context.Context, key string, r io.Reader, content Content, opts putOptions) error
 	Delete(ctx context.Context, key string) error
 	PresignGet(ctx context.Context, key string, ttl time.Duration, opts getOptions) (string, error)
-	PresignPut(ctx context.Context, key string, ttl time.Duration) (UploadTarget, error)
+	PresignPut(ctx context.Context, key string, content Content, ttl time.Duration) (UploadTarget, error)
 	TransferOrigin() string
-	beginUpload(ctx context.Context, key string, sizeBytes int64) (UploadAction, error)
-	seal(ctx context.Context, stagingKey, key string) error
-	cleanupStaging(ctx context.Context, before time.Time, retain func(context.Context, string) (bool, error)) error
-	expiredCandidates(ctx context.Context, before time.Time) ([]string, error)
+	beginUpload(ctx context.Context, key string, content Content) (UploadAction, error)
+	// verify compares the backend's own record of the stored bytes with content.
+	verify(ctx context.Context, key string, content Content) error
+	// head returns up to n leading bytes.
+	head(ctx context.Context, key string, n int64) ([]byte, error)
+	// expiredObjects lists the object keys last written before the cutoff.
+	expiredObjects(ctx context.Context, before time.Time) ([]string, error)
 }
 
 // multipartBackend is the multipart transfer contract implemented by S3 storage.
@@ -37,15 +40,21 @@ type multipartBackend interface {
 		ctx context.Context,
 		key, uploadID string,
 		partNumber int32,
+		crc64nvme string,
 		ttl time.Duration,
 	) (UploadTarget, error)
-	CompleteMultipartUpload(ctx context.Context, key, uploadID string, parts []CompletedPart) error
+	// CompleteMultipartUpload assembles the parts the provider holds, which must
+	// total sizeBytes.
+	CompleteMultipartUpload(ctx context.Context, key, uploadID string, sizeBytes int64) error
 	AbortMultipartUpload(ctx context.Context, key, uploadID string) error
+	// expiredUploads lists the uploads initiated before the cutoff.
+	expiredUploads(ctx context.Context, before time.Time) ([]multipartUpload, error)
 }
 
-// objectInfo is backend metadata for stored bytes.
-type objectInfo struct {
-	Size int64
+// multipartUpload identifies one incomplete upload held by the provider.
+type multipartUpload struct {
+	Key string
+	ID  string
 }
 
 // putOptions carries representation metadata to preserve with stored bytes.
@@ -59,17 +68,12 @@ type getOptions struct {
 	CacheControl string
 }
 
-// UploadTarget identifies where and how to put an object's bytes.
+// UploadTarget identifies where and how to put an object's bytes. A client
+// sends Headers unchanged; the target accepts only the bytes it was issued for.
 type UploadTarget struct {
 	URL     string            `json:"url"`
 	Method  string            `json:"method" enum:"PUT"`
 	Headers map[string]string `json:"headers,omitempty"`
-}
-
-// CompletedPart identifies one uploaded S3 multipart part.
-type CompletedPart struct {
-	PartNumber int32  `json:"part_number" minimum:"1" maximum:"10000"`
-	ETag       string `json:"etag" minLength:"1"`
 }
 
 func transferOrigin(rawURL string) (string, error) {

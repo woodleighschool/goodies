@@ -20,11 +20,15 @@ var (
 	errExpiredCapability = errors.New("expired storage capability")
 )
 
+// capabilityClaims authorize one transfer. A put names the size and SHA-256 of
+// the only bytes it admits.
 type capabilityClaims struct {
 	Op          string `json:"op"`
 	Key         string `json:"key"`
 	Exp         int64  `json:"exp"`
 	ContentType string `json:"content_type,omitempty"`
+	SizeBytes   int64  `json:"size_bytes,omitempty"`
+	SHA256      string `json:"sha256,omitempty"`
 }
 
 func signCapability(key []byte, claims capabilityClaims) string {

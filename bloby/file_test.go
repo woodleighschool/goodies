@@ -17,7 +17,7 @@ const testTransferTTL = 17 * time.Minute
 func TestFileStoreRejectsTraversal(t *testing.T) {
 	t.Parallel()
 	store := newTestFileStore(t)
-	if err := store.Put(context.Background(), "../escape", bytes.NewReader([]byte("x")), putOptions{}); err == nil {
+	if err := store.Put(context.Background(), "../escape", strings.NewReader("x"), declare("x"), putOptions{}); err == nil {
 		t.Fatal("Put with traversal key returned nil error, want rejection")
 	}
 }
@@ -75,7 +75,7 @@ func TestFileStoreDeliversObjectDirectly(t *testing.T) {
 		AvailableAt: &now,
 		StorageKey:  &storageKey,
 	}
-	if err := store.Put(t.Context(), object.Key(), strings.NewReader("icon bytes"), putOptions{}); err != nil {
+	if err := store.Put(t.Context(), object.Key(), strings.NewReader("icon bytes"), declare("icon bytes"), putOptions{}); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 
@@ -145,17 +145,19 @@ func TestFileStorePresignPutProducesUploadTarget(t *testing.T) {
 	t.Parallel()
 	store := newTestFileStore(t)
 	issuedAfter := time.Now()
+	content := declare("installer bytes")
 
 	target, err := store.PresignPut(
 		context.Background(),
 		"munki/packages/42/Installer.pkg",
+		content,
 		0,
 	)
 	if err != nil {
 		t.Fatalf("PresignPut: %v", err)
 	}
-	if target.Method != http.MethodPut {
-		t.Fatalf("method = %q, want PUT", target.Method)
+	if target.Method != http.MethodPut || len(target.Headers) != 0 {
+		t.Fatalf("target = %+v, want a PUT without headers", target)
 	}
 	parsed, err := url.Parse(target.URL)
 	if err != nil {
@@ -163,9 +165,6 @@ func TestFileStorePresignPutProducesUploadTarget(t *testing.T) {
 	}
 	if got := parsed.Scheme + "://" + parsed.Host + parsed.Path; got != "https://woodstar.example/storage/munki/packages/42/Installer.pkg" {
 		t.Fatalf("url path = %q, want path-bound storage URL", got)
-	}
-	if parsed.Query().Get("cap") == "" {
-		t.Fatalf("url = %q, want capability token", target.URL)
 	}
 	claims, err := verifyCapability(
 		testCapabilityKey,
@@ -178,6 +177,9 @@ func TestFileStorePresignPutProducesUploadTarget(t *testing.T) {
 	}
 	if claims.Key != "munki/packages/42/Installer.pkg" {
 		t.Fatalf("key = %q, want object key", claims.Key)
+	}
+	if claims.SizeBytes != content.SizeBytes || claims.SHA256 != content.SHA256 {
+		t.Fatalf("claims = %+v, want the declared size and SHA-256", claims)
 	}
 	assertCapabilityExpiry(t, claims.Exp, issuedAfter, time.Now())
 	if got := store.TransferOrigin(); got != "https://woodstar.example" {

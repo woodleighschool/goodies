@@ -7,7 +7,8 @@ const (
 )
 
 // UploadAction describes the upload selected by Service. Direct uploads have a
-// target; multipart uploads use Service's part signing and completion endpoints.
+// target; multipart uploads sign each part through Service and are assembled
+// when the object is finalized.
 type UploadAction struct {
 	Strategy string        `json:"strategy"`
 	Target   *UploadTarget `json:"target,omitempty"`

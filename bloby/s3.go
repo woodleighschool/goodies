@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -30,11 +29,11 @@ var _ multipartBackend = (*s3Store)(nil)
 
 const s3MultipartThreshold = 100 * 1024 * 1024
 
-func (s *s3Store) beginUpload(ctx context.Context, key string, sizeBytes int64) (UploadAction, error) {
-	if sizeBytes > s3MultipartThreshold {
+func (s *s3Store) beginUpload(ctx context.Context, key string, content Content) (UploadAction, error) {
+	if content.SizeBytes > s3MultipartThreshold {
 		return UploadAction{Strategy: StrategyMultipart}, nil
 	}
-	target, err := s.PresignPut(ctx, key, 0)
+	target, err := s.PresignPut(ctx, key, content, 0)
 	if err != nil {
 		return UploadAction{}, err
 	}
@@ -42,6 +41,9 @@ func (s *s3Store) beginUpload(ctx context.Context, key string, sizeBytes int64) 
 }
 
 func newS3Store(ctx context.Context, cfg S3Config, transferTTL time.Duration) (*s3Store, error) {
+	// Bloby names the checksum on every write and compares checksums itself, so
+	// the SDK adds none of its own and validates no responses. Fixing both here
+	// keeps ambient AWS configuration from changing signed requests.
 	awsCfg, err := awsconfig.LoadDefaultConfig(
 		ctx,
 		awsconfig.WithRegion(cfg.Region),
@@ -50,15 +52,14 @@ func newS3Store(ctx context.Context, cfg S3Config, transferTTL time.Duration) (*
 			cfg.SecretKey,
 			"",
 		)),
+		awsconfig.WithRequestChecksumCalculation(aws.RequestChecksumCalculationWhenRequired),
+		awsconfig.WithResponseChecksumValidation(aws.ResponseChecksumValidationWhenRequired),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("load storage s3 config: %w", err)
 	}
 	client := newS3Client(awsCfg, cfg.Endpoint, cfg.PathStyle)
-	// Presigned reads are redirects, so their signatures cannot require request headers.
-	presigner := s3.NewPresignClient(client, s3.WithPresignClientFromClientOptions(func(options *s3.Options) {
-		options.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
-	}))
+	presigner := s3.NewPresignClient(client)
 	origin, err := presignedTransferOrigin(ctx, presigner, cfg.Bucket)
 	if err != nil {
 		return nil, err
@@ -112,31 +113,32 @@ func (s *s3Store) TransferOrigin() string {
 	return s.transferOrigin
 }
 
-func (s *s3Store) Open(ctx context.Context, key string) (io.ReadCloser, objectInfo, error) {
+func (s *s3Store) Open(ctx context.Context, key string) (io.ReadCloser, error) {
 	output, err := s.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(key),
 	})
 	if s3NotFound(err) {
-		return nil, objectInfo{}, ErrObjectNotFound
+		return nil, ErrObjectNotFound
 	}
 	if err != nil {
-		return nil, objectInfo{}, fmt.Errorf("get %q: %w", key, err)
+		return nil, fmt.Errorf("get %q: %w", key, err)
 	}
-	return output.Body, objectInfo{Size: aws.ToInt64(output.ContentLength)}, nil
+	return output.Body, nil
 }
 
 // Put buffers the body to make it seekable for signing. The presigned upload
 // path is the norm for large objects; server-side Put is for modest writes.
-func (s *s3Store) Put(ctx context.Context, key string, r io.Reader, opts putOptions) error {
+func (s *s3Store) Put(ctx context.Context, key string, r io.Reader, content Content, opts putOptions) error {
 	body, err := io.ReadAll(r)
 	if err != nil {
 		return fmt.Errorf("read body for %q: %w", key, err)
 	}
 	input := &s3.PutObjectInput{
-		Bucket: aws.String(s.bucket),
-		Key:    aws.String(key),
-		Body:   bytes.NewReader(body),
+		Bucket:         aws.String(s.bucket),
+		Key:            aws.String(key),
+		Body:           bytes.NewReader(body),
+		ChecksumSHA256: aws.String(base64Digest(content.SHA256)),
 	}
 	if opts.ContentType != "" {
 		input.ContentType = aws.String(opts.ContentType)
@@ -180,14 +182,19 @@ func (s *s3Store) PresignGet(
 	return output.URL, nil
 }
 
+// PresignPut binds the declared SHA-256 and length into the signature. The
+// provider rejects any other body, so the URL can only ever store those bytes.
 func (s *s3Store) PresignPut(
 	ctx context.Context,
 	key string,
+	content Content,
 	ttl time.Duration,
 ) (UploadTarget, error) {
 	input := &s3.PutObjectInput{
-		Bucket: aws.String(s.bucket),
-		Key:    aws.String(key),
+		Bucket:         aws.String(s.bucket),
+		Key:            aws.String(key),
+		ChecksumSHA256: aws.String(base64Digest(content.SHA256)),
+		ContentLength:  aws.Int64(content.SizeBytes),
 	}
 	output, err := s.presigner.PresignPutObject(ctx, input, s.expires(ttl))
 	if err != nil {
@@ -196,14 +203,18 @@ func (s *s3Store) PresignPut(
 	return UploadTarget{
 		URL:     output.URL,
 		Method:  http.MethodPut,
-		Headers: singleValueHeaders(output.SignedHeader),
+		Headers: uploadHeaders(output.SignedHeader),
 	}, nil
 }
 
+// CreateMultipartUpload asks the provider for a full-object CRC64NVME, the one
+// multipart checksum that covers the assembled object rather than its parts.
 func (s *s3Store) CreateMultipartUpload(ctx context.Context, key string) (string, error) {
 	output, err := s.client.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{
-		Bucket: aws.String(s.bucket),
-		Key:    aws.String(key),
+		Bucket:            aws.String(s.bucket),
+		Key:               aws.String(key),
+		ChecksumAlgorithm: types.ChecksumAlgorithmCrc64nvme,
+		ChecksumType:      types.ChecksumTypeFullObject,
 	})
 	if err != nil {
 		return "", fmt.Errorf("create multipart upload for %q: %w", key, err)
@@ -220,13 +231,15 @@ func (s *s3Store) PresignMultipartPart(
 	key string,
 	uploadID string,
 	partNumber int32,
+	crc64nvme string,
 	ttl time.Duration,
 ) (UploadTarget, error) {
 	output, err := s.presigner.PresignUploadPart(ctx, &s3.UploadPartInput{
-		Bucket:     aws.String(s.bucket),
-		Key:        aws.String(key),
-		UploadId:   aws.String(uploadID),
-		PartNumber: aws.Int32(partNumber),
+		Bucket:            aws.String(s.bucket),
+		Key:               aws.String(key),
+		UploadId:          aws.String(uploadID),
+		PartNumber:        aws.Int32(partNumber),
+		ChecksumCRC64NVME: aws.String(base64Digest(crc64nvme)),
 	}, s.expires(ttl))
 	if err != nil {
 		return UploadTarget{}, fmt.Errorf("presign multipart part %d for %q: %w", partNumber, key, err)
@@ -234,29 +247,52 @@ func (s *s3Store) PresignMultipartPart(
 	return UploadTarget{
 		URL:     output.URL,
 		Method:  http.MethodPut,
-		Headers: singleValueHeaders(output.SignedHeader),
+		Headers: uploadHeaders(output.SignedHeader),
 	}, nil
 }
 
-func (s *s3Store) CompleteMultipartUpload(
-	ctx context.Context,
-	key string,
-	uploadID string,
-	parts []CompletedPart,
-) error {
-	completed := make([]types.CompletedPart, len(parts))
-	for i, part := range parts {
-		completed[i] = types.CompletedPart{
-			ETag:       aws.String(part.ETag),
-			PartNumber: aws.Int32(part.PartNumber),
+// CompleteMultipartUpload assembles the parts the provider lists. Providers
+// differ on whether completion checks a declared size or checksum, so the
+// size is checked here and the checksum by verify.
+func (s *s3Store) CompleteMultipartUpload(ctx context.Context, key, uploadID string, sizeBytes int64) error {
+	var (
+		parts []types.CompletedPart
+		total int64
+	)
+	pages := s3.NewListPartsPaginator(s.client, &s3.ListPartsInput{
+		Bucket:   aws.String(s.bucket),
+		Key:      aws.String(key),
+		UploadId: aws.String(uploadID),
+	})
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+		if s3NoSuchUpload(err) {
+			return ErrMultipartUploadNotFound
 		}
+		if err != nil {
+			return fmt.Errorf("list multipart parts for %q: %w", key, err)
+		}
+		for _, part := range page.Parts {
+			total += aws.ToInt64(part.Size)
+			parts = append(parts, types.CompletedPart{
+				PartNumber:        part.PartNumber,
+				ETag:              part.ETag,
+				ChecksumCRC64NVME: part.ChecksumCRC64NVME,
+			})
+		}
+	}
+	if len(parts) == 0 {
+		return fmt.Errorf("%w: upload has not arrived: %w", ErrInvalidInput, ErrObjectNotFound)
+	}
+	if total != sizeBytes {
+		return contentMismatch("uploaded parts total %d bytes, declared %d", total, sizeBytes)
 	}
 	_, err := s.client.CompleteMultipartUpload(ctx, &s3.CompleteMultipartUploadInput{
 		Bucket:   aws.String(s.bucket),
 		Key:      aws.String(key),
 		UploadId: aws.String(uploadID),
 		MultipartUpload: &types.CompletedMultipartUpload{
-			Parts: completed,
+			Parts: parts,
 		},
 	})
 	if s3NoSuchUpload(err) {
@@ -281,6 +317,64 @@ func (s *s3Store) AbortMultipartUpload(ctx context.Context, key string, uploadID
 		return fmt.Errorf("abort multipart upload for %q: %w", key, err)
 	}
 	return nil
+}
+
+// verify compares the checksum the provider computed for the object with the
+// declaration: SHA-256 for a single PUT, CRC64NVME for an assembled upload. A
+// provider that reports neither cannot vouch for the bytes.
+func (s *s3Store) verify(ctx context.Context, key string, content Content) error {
+	object, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket:       aws.String(s.bucket),
+		Key:          aws.String(key),
+		ChecksumMode: types.ChecksumModeEnabled,
+	})
+	if s3NotFound(err) {
+		return ErrObjectNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("head %q: %w", key, err)
+	}
+	if size := aws.ToInt64(object.ContentLength); size != content.SizeBytes {
+		return contentMismatch("storage holds %d bytes, declared %d", size, content.SizeBytes)
+	}
+	verified := false
+	if object.ChecksumType != types.ChecksumTypeComposite {
+		for _, checksum := range []struct{ name, stored, declared string }{
+			{"SHA-256", aws.ToString(object.ChecksumSHA256), base64Digest(content.SHA256)},
+			{"CRC64NVME", aws.ToString(object.ChecksumCRC64NVME), base64Digest(content.CRC64NVME)},
+		} {
+			if checksum.stored == "" {
+				continue
+			}
+			if checksum.stored != checksum.declared {
+				return contentMismatch("storage does not hold the declared %s", checksum.name)
+			}
+			verified = true
+		}
+	}
+	if !verified {
+		return fmt.Errorf("verify %q: storage reported no full-object SHA-256 or CRC64NVME", key)
+	}
+	return nil
+}
+
+func (s *s3Store) head(ctx context.Context, key string, n int64) ([]byte, error) {
+	output, err := s.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+		Range:  aws.String(fmt.Sprintf("bytes=0-%d", n-1)),
+	})
+	if s3NotFound(err) {
+		return nil, ErrObjectNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get head of %q: %w", key, err)
+	}
+	head, readErr := io.ReadAll(io.LimitReader(output.Body, n))
+	if err := errors.Join(readErr, output.Body.Close()); err != nil {
+		return nil, fmt.Errorf("read head of %q: %w", key, err)
+	}
+	return head, nil
 }
 
 func (s *s3Store) expires(ttl time.Duration) func(*s3.PresignOptions) {
@@ -308,166 +402,29 @@ func s3NoSuchUpload(err error) bool {
 	return ok && apiErr.ErrorCode() == "NoSuchUpload"
 }
 
-func singleValueHeaders(headers http.Header) map[string]string {
-	if len(headers) == 0 {
-		return nil
-	}
+// uploadHeaders returns the signed headers an uploader must send. HTTP clients
+// derive Host and Content-Length from the request themselves.
+func uploadHeaders(headers http.Header) map[string]string {
 	out := make(map[string]string, len(headers))
 	for key, values := range headers {
-		if key == "Host" {
+		if key == "Host" || key == "Content-Length" || len(values) == 0 {
 			continue
 		}
-		if len(values) > 0 {
-			out[key] = values[0]
-		}
+		out[key] = values[0]
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }
 
-const (
-	s3CopyPartSize    int64 = 5 * 1024 * 1024 * 1024
-	s3MinimumCopySize int64 = 5 * 1024 * 1024
-)
-
-// seal copies a pinned staging representation to an attempt-specific key.
-// The registry selects one candidate only after its immutable bytes are inspected.
-func (s *s3Store) seal(ctx context.Context, stagingKey, key string) error {
-	source, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(stagingKey)})
-	if s3NotFound(err) {
-		return ErrObjectNotFound
-	}
-	if err != nil {
-		return fmt.Errorf("head staging object %q: %w", stagingKey, err)
-	}
-	if aws.ToString(source.ETag) == "" {
-		return fmt.Errorf("seal %q: source ETag is missing", key)
-	}
-	if aws.ToInt64(source.ContentLength) < s3MinimumCopySize {
-		return s.sealSmall(ctx, stagingKey, key, source)
-	}
-	uploadID, err := s.CreateMultipartUpload(ctx, key)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), objectCleanupTimeout)
-		defer cancel()
-		_ = s.AbortMultipartUpload(cleanupCtx, key, uploadID)
-	}()
-
-	copySource := escapePath(s.bucket + "/" + stagingKey)
-	if version := aws.ToString(source.VersionId); version != "" {
-		copySource += "?versionId=" + url.QueryEscape(version)
-	}
-	size := aws.ToInt64(source.ContentLength)
-	parts := make([]types.CompletedPart, 0, (size+s3CopyPartSize-1)/s3CopyPartSize)
-	for offset := int64(0); offset < size; offset += s3CopyPartSize {
-		partNumber := int32(len(parts) + 1) //nolint:gosec // S3 object and part limits keep this below 10001.
-		input := &s3.UploadPartCopyInput{
-			Bucket: aws.String(s.bucket), Key: aws.String(key), UploadId: aws.String(uploadID), PartNumber: aws.Int32(partNumber),
-			CopySource: aws.String(copySource), CopySourceIfMatch: source.ETag,
-		}
-		// S3 permits byte-range copy only for sources larger than 5 MiB.
-		// A single part copies the whole object without a range.
-		if size > s3CopyPartSize {
-			input.CopySourceRange = aws.String(fmt.Sprintf("bytes=%d-%d", offset, min(offset+s3CopyPartSize, size)-1))
-		}
-		output, err := s.client.UploadPartCopy(ctx, input)
-		if err != nil {
-			return fmt.Errorf("copy part %d: %w", partNumber, err)
-		}
-		if output.CopyPartResult == nil || aws.ToString(output.CopyPartResult.ETag) == "" {
-			return fmt.Errorf("seal %q part %d: provider returned no ETag", key, partNumber)
-		}
-		parts = append(parts, types.CompletedPart{PartNumber: aws.Int32(partNumber), ETag: output.CopyPartResult.ETag})
-	}
-	_, err = s.client.CompleteMultipartUpload(ctx, &s3.CompleteMultipartUploadInput{
-		Bucket: aws.String(s.bucket), Key: aws.String(key), UploadId: aws.String(uploadID),
-		MultipartUpload: &types.CompletedMultipartUpload{Parts: parts},
-	})
-	return err
-}
-
-// S3-compatible providers may reject multipart copies below the minimum part
-// size. A bounded read pins their source ETag before writing a unique candidate.
-func (s *s3Store) sealSmall(ctx context.Context, stagingKey, key string, source *s3.HeadObjectOutput) error {
-	output, err := s.client.GetObject(ctx, &s3.GetObjectInput{
-		Bucket: aws.String(s.bucket), Key: aws.String(stagingKey), IfMatch: source.ETag, VersionId: source.VersionId,
-	})
-	if err != nil {
-		return err
-	}
-	body, readErr := io.ReadAll(io.LimitReader(output.Body, s3MinimumCopySize))
-	closeErr := output.Body.Close()
-	if err := errors.Join(readErr, closeErr); err != nil {
-		return fmt.Errorf("read staging object %q: %w", stagingKey, err)
-	}
-	if int64(len(body)) != aws.ToInt64(source.ContentLength) {
-		return fmt.Errorf("seal %q: staging size changed", key)
-	}
-	_, err = s.client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket: aws.String(s.bucket), Key: aws.String(key), Body: bytes.NewReader(body),
-	})
-	return err
-}
-
-func (s *s3Store) cleanupStaging(ctx context.Context, before time.Time, retain func(context.Context, string) (bool, error)) error {
-	objects := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{
-		Bucket: aws.String(s.bucket), Prefix: aws.String(stagingPrefix),
-	})
-	for objects.HasMorePages() {
-		page, err := objects.NextPage(ctx)
-		if err != nil {
-			return fmt.Errorf("list staging objects: %w", err)
-		}
-		for _, object := range page.Contents {
-			if object.LastModified != nil && object.LastModified.Before(before) {
-				keep, err := retain(ctx, aws.ToString(object.Key))
-				if err != nil {
-					return err
-				}
-				if keep {
-					continue
-				}
-				if err := s.Delete(ctx, aws.ToString(object.Key)); err != nil {
-					return err
-				}
-			}
-		}
-	}
-	// A process can die while copying sealed bytes. Expire those server-owned
-	// multipart uploads as well as abandoned client multipart uploads.
-	uploads := s3.NewListMultipartUploadsPaginator(s.client, &s3.ListMultipartUploadsInput{Bucket: aws.String(s.bucket)})
-	for uploads.HasMorePages() {
-		page, err := uploads.NextPage(ctx)
-		if err != nil {
-			return fmt.Errorf("list incomplete uploads: %w", err)
-		}
-		for _, upload := range page.Uploads {
-			if upload.Initiated != nil && upload.Initiated.Before(before) {
-				keep, err := retain(ctx, aws.ToString(upload.Key))
-				if err != nil {
-					return err
-				}
-				if keep {
-					continue
-				}
-				if err := s.AbortMultipartUpload(ctx, aws.ToString(upload.Key), aws.ToString(upload.UploadId)); err != nil && !errors.Is(err, ErrMultipartUploadNotFound) {
-					return err
-				}
-			}
-		}
-	}
-	return nil
-}
-
-func (s *s3Store) expiredCandidates(ctx context.Context, before time.Time) ([]string, error) {
-	objects := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{Bucket: aws.String(s.bucket), Prefix: aws.String(candidatePrefix)})
+func (s *s3Store) expiredObjects(ctx context.Context, before time.Time) ([]string, error) {
+	objects := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{Bucket: aws.String(s.bucket), Prefix: aws.String(objectPrefix)})
 	var keys []string
 	for objects.HasMorePages() {
 		page, err := objects.NextPage(ctx)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("list objects: %w", err)
 		}
 		for _, object := range page.Contents {
 			if object.LastModified != nil && object.LastModified.Before(before) {
@@ -476,4 +433,21 @@ func (s *s3Store) expiredCandidates(ctx context.Context, before time.Time) ([]st
 		}
 	}
 	return keys, nil
+}
+
+func (s *s3Store) expiredUploads(ctx context.Context, before time.Time) ([]multipartUpload, error) {
+	pages := s3.NewListMultipartUploadsPaginator(s.client, &s3.ListMultipartUploadsInput{Bucket: aws.String(s.bucket)})
+	var uploads []multipartUpload
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("list incomplete uploads: %w", err)
+		}
+		for _, upload := range page.Uploads {
+			if upload.Initiated != nil && upload.Initiated.Before(before) {
+				uploads = append(uploads, multipartUpload{Key: aws.ToString(upload.Key), ID: aws.ToString(upload.UploadId)})
+			}
+		}
+	}
+	return uploads, nil
 }

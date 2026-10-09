@@ -58,13 +58,12 @@ func (d *Service) DownloadURL(
 	})
 }
 
-// Open reads the sealed bytes of an authorized available object.
+// Open reads the bytes of an authorized available object.
 func (s *Service) Open(ctx context.Context, object Object) (io.ReadCloser, error) {
 	if !object.Available() {
 		return nil, ErrNotFound
 	}
-	reader, _, err := s.backend.Open(ctx, object.Key())
-	return reader, err
+	return s.backend.Open(ctx, object.Key())
 }
 
 // TransferOrigin returns the origin used by direct browser transfers.

@@ -57,17 +57,17 @@ func (h transferHandler) put(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := h.store.Put(
-		r.Context(),
-		claims.Key,
-		r.Body,
-		putOptions{},
-	); err != nil {
+	content := Content{SizeBytes: claims.SizeBytes, SHA256: claims.SHA256}
+	err := h.store.Put(r.Context(), claims.Key, r.Body, content, putOptions{})
+	switch {
+	case errors.Is(err, ErrContentMismatch):
+		w.WriteHeader(http.StatusBadRequest)
+	case err != nil:
 		h.logError(r, "put-storage-object", err, "key", claims.Key)
 		w.WriteHeader(http.StatusInternalServerError)
-		return
+	default:
+		w.WriteHeader(http.StatusNoContent)
 	}
-	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h transferHandler) logError(r *http.Request, operation string, err error, attrs ...any) {
@@ -90,6 +90,9 @@ func (h transferHandler) verify(
 		w.WriteHeader(http.StatusGone)
 		return capabilityClaims{}, false
 	case err != nil || claims.Key == "" || requestKey != claims.Key:
+		w.WriteHeader(http.StatusUnauthorized)
+		return capabilityClaims{}, false
+	case op == capabilityPut && (claims.SizeBytes < 0 || !sha256Pattern.MatchString(claims.SHA256)):
 		w.WriteHeader(http.StatusUnauthorized)
 		return capabilityClaims{}, false
 	}

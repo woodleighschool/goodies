@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -19,21 +20,28 @@ type memoryRegistry struct {
 	objects    map[int64]Object
 	expired    map[int64]time.Time
 	referenced map[int64]bool
-	beforeMark func() error
-	afterMark  func() error
-	getFailure error
+	// published counts pending objects that became available.
+	published     int
+	beforeRefresh func()
+	beforeMark    func() error
+	afterMark     func() error
+	getFailure    error
 }
 
 func newMemoryRegistry() *memoryRegistry {
 	return &memoryRegistry{objects: make(map[int64]Object), expired: make(map[int64]time.Time), referenced: make(map[int64]bool)}
 }
 
-func (r *memoryRegistry) CreatePending(_ context.Context, prefix, filename string) (*Object, error) {
+func (r *memoryRegistry) CreatePending(_ context.Context, prefix, filename string, content Content) (*Object, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.nextID++
 	now := time.Now()
-	object := Object{ID: r.nextID, Prefix: prefix, Filename: filename, CreatedAt: now, UpdatedAt: now}
+	object := Object{
+		ID: r.nextID, Prefix: prefix, Filename: filename,
+		SizeBytes: &content.SizeBytes, SHA256: &content.SHA256, CRC64NVME: &content.CRC64NVME,
+		CreatedAt: now, UpdatedAt: now,
+	}
 	r.objects[object.ID] = object
 	return &object, nil
 }
@@ -55,7 +63,7 @@ func (r *memoryRegistry) GetByID(_ context.Context, id int64) (*Object, error) {
 	return r.get(id)
 }
 
-func (r *memoryRegistry) MarkAvailable(_ context.Context, id, size int64, contentType, hash, storageKey string) (*Object, error) {
+func (r *memoryRegistry) MarkAvailable(_ context.Context, id int64, contentType, storageKey string) (*Object, error) {
 	if r.beforeMark != nil {
 		if err := r.beforeMark(); err != nil {
 			return nil, err
@@ -72,12 +80,11 @@ func (r *memoryRegistry) MarkAvailable(_ context.Context, id, size int64, conten
 	}
 	now := time.Now()
 	object.StorageKey = &storageKey
-	object.SizeBytes = &size
-	object.SHA256 = &hash
 	object.ContentType = contentType
 	object.AvailableAt = &now
 	object.UpdatedAt = now
 	r.objects[id] = *object
+	r.published++
 	if r.afterMark != nil {
 		if err := r.afterMark(); err != nil {
 			return nil, err
@@ -87,6 +94,9 @@ func (r *memoryRegistry) MarkAvailable(_ context.Context, id, size int64, conten
 }
 
 func (r *memoryRegistry) RefreshPending(_ context.Context, id int64) (*Object, error) {
+	if r.beforeRefresh != nil {
+		r.beforeRefresh()
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	object, err := r.get(id)
@@ -214,8 +224,28 @@ func (r *memoryRegistry) DeleteExpiredPending(_ context.Context, id int64) error
 	return nil
 }
 
+// edit rewrites a stored object in place, for states only time or an earlier
+// release can produce.
+func (r *memoryRegistry) edit(id int64, change func(*Object)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	object := r.objects[id]
+	change(&object)
+	r.objects[id] = object
+}
+
 func testLogger() *slog.Logger { return slog.New(slog.DiscardHandler) }
+
 func hashString(body string) string {
 	hash := sha256.Sum256([]byte(body))
 	return hex.EncodeToString(hash[:])
+}
+
+// declare returns the declaration an uploader makes for body.
+func declare(body string) Content {
+	content, err := Digest(strings.NewReader(body))
+	if err != nil {
+		panic(err)
+	}
+	return content
 }

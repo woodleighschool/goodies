@@ -1,6 +1,7 @@
 package bloby
 
 import (
+	"maps"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -12,17 +13,7 @@ const testS3TransferTTL = 17 * time.Minute
 
 func TestS3StoreSelectsUploadActionBySize(t *testing.T) {
 	t.Parallel()
-	store, err := newS3Store(t.Context(), S3Config{
-		Bucket:    "woodstar",
-		Region:    "ap-southeast-2",
-		Endpoint:  "https://uploads.example",
-		AccessKey: "test-access-key",
-		SecretKey: "test-secret-key",
-		PathStyle: true,
-	}, time.Minute)
-	if err != nil {
-		t.Fatalf("newS3Store: %v", err)
-	}
+	store := newTestS3Store(t, time.Minute)
 
 	for _, tt := range []struct {
 		name          string
@@ -34,37 +25,67 @@ func TestS3StoreSelectsUploadActionBySize(t *testing.T) {
 		{name: "above threshold", sizeBytes: 100*1024*1024 + 1, wantMultipart: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			action, err := store.beginUpload(t.Context(), "munki/packages/42/Installer.pkg", tt.sizeBytes)
+			content := declare("")
+			content.SizeBytes = tt.sizeBytes
+			action, err := store.beginUpload(t.Context(), "munki/packages/42/Installer.pkg", content)
 			if err != nil {
 				t.Fatalf("begin upload: %v", err)
 			}
 			multipart := action.Strategy == StrategyMultipart
-			if multipart != tt.wantMultipart {
-				t.Fatalf("multipart action = %t, want %t", multipart, tt.wantMultipart)
+			if multipart != tt.wantMultipart || multipart == (action.Target != nil) {
+				t.Fatalf("action = %+v, want multipart %t", action, tt.wantMultipart)
 			}
 		})
 	}
 }
 
-func TestS3StorePresignsMultipartPart(t *testing.T) {
+func TestS3StorePresignedPutBindsDeclaredContent(t *testing.T) {
 	t.Parallel()
-	store, err := newS3Store(t.Context(), S3Config{
-		Bucket:    "woodstar",
-		Region:    "ap-southeast-2",
-		Endpoint:  "https://uploads.example",
-		AccessKey: "test-access-key",
-		SecretKey: "test-secret-key",
-		PathStyle: true,
-	}, testS3TransferTTL)
-	if err != nil {
-		t.Fatalf("newS3Store: %v", err)
+	store := newTestS3Store(t, testS3TransferTTL)
+	for _, test := range []struct {
+		name          string
+		body          string
+		signedHeaders string
+	}{
+		{name: "content", body: "installer bytes", signedHeaders: "content-length;host;x-amz-checksum-sha256"},
+		// A zero length is not signed; only the empty body has the signed SHA-256.
+		{name: "empty", body: "", signedHeaders: "host;x-amz-checksum-sha256"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			content := declare(test.body)
+			target, err := store.PresignPut(t.Context(), "_objects/42/Installer.pkg", content, 0)
+			if err != nil {
+				t.Fatalf("PresignPut: %v", err)
+			}
+			if target.Method != http.MethodPut {
+				t.Fatalf("method = %q, want %q", target.Method, http.MethodPut)
+			}
+			// A browser cannot set Host or Content-Length; it sends the rest unchanged.
+			if want := map[string]string{"X-Amz-Checksum-Sha256": base64Digest(content.SHA256)}; !maps.Equal(target.Headers, want) {
+				t.Fatalf("headers = %v, want %v", target.Headers, want)
+			}
+			parsed, err := url.Parse(target.URL)
+			if err != nil {
+				t.Fatalf("parse URL: %v", err)
+			}
+			if got := parsed.Query().Get("X-Amz-SignedHeaders"); got != test.signedHeaders {
+				t.Fatalf("X-Amz-SignedHeaders = %q, want %q", got, test.signedHeaders)
+			}
+		})
 	}
+}
+
+func TestS3StorePresignedPartBindsItsChecksum(t *testing.T) {
+	t.Parallel()
+	store := newTestS3Store(t, testS3TransferTTL)
+	crc := declare("part bytes").CRC64NVME
 
 	target, err := store.PresignMultipartPart(
 		t.Context(),
-		"munki/packages/42/Installer.pkg",
+		"_objects/42/Installer.pkg",
 		"upload-id",
 		7,
+		crc,
 		0,
 	)
 	if err != nil {
@@ -72,6 +93,9 @@ func TestS3StorePresignsMultipartPart(t *testing.T) {
 	}
 	if target.Method != http.MethodPut {
 		t.Fatalf("method = %q, want %q", target.Method, http.MethodPut)
+	}
+	if want := map[string]string{"X-Amz-Checksum-Crc64nvme": base64Digest(crc)}; !maps.Equal(target.Headers, want) {
+		t.Fatalf("headers = %v, want %v", target.Headers, want)
 	}
 	parsed, err := url.Parse(target.URL)
 	if err != nil {
@@ -84,11 +108,8 @@ func TestS3StorePresignsMultipartPart(t *testing.T) {
 	if got := query.Get("partNumber"); got != "7" {
 		t.Fatalf("partNumber = %q, want 7", got)
 	}
-	if got := query.Get("X-Amz-Expires"); got != strconv.FormatInt(int64(testS3TransferTTL/time.Second), 10) {
-		t.Fatalf("X-Amz-Expires = %q, want configured TTL", got)
-	}
-	if got := query.Get("X-Amz-SignedHeaders"); got != "host" {
-		t.Fatalf("X-Amz-SignedHeaders = %q, want host", got)
+	if got := query.Get("X-Amz-SignedHeaders"); got != "host;x-amz-checksum-crc64nvme" {
+		t.Fatalf("X-Amz-SignedHeaders = %q, want the host and part checksum", got)
 	}
 }
 
@@ -133,6 +154,7 @@ func TestS3StoreTransferOriginMatchesPresignedPart(t *testing.T) {
 				"munki/packages/42/Installer.pkg",
 				"upload-id",
 				1,
+				declare("part bytes").CRC64NVME,
 				time.Minute,
 			)
 			if err != nil {
@@ -151,23 +173,13 @@ func TestS3StoreTransferOriginMatchesPresignedPart(t *testing.T) {
 
 func TestS3StoreUsesConfiguredTransferTTL(t *testing.T) {
 	t.Parallel()
-	store, err := newS3Store(t.Context(), S3Config{
-		Bucket:    "woodstar",
-		Region:    "ap-southeast-2",
-		Endpoint:  "https://uploads.example",
-		AccessKey: "test-access-key",
-		SecretKey: "test-secret-key",
-		PathStyle: true,
-	}, testS3TransferTTL)
-	if err != nil {
-		t.Fatalf("newS3Store: %v", err)
-	}
+	store := newTestS3Store(t, testS3TransferTTL)
 
 	getURL, err := store.PresignGet(t.Context(), "munki/icons/7/icon.png", 0, getOptions{})
 	if err != nil {
 		t.Fatalf("PresignGet: %v", err)
 	}
-	putTarget, err := store.PresignPut(t.Context(), "munki/packages/42/upload", 0)
+	putTarget, err := store.PresignPut(t.Context(), "munki/packages/42/upload", declare("upload"), 0)
 	if err != nil {
 		t.Fatalf("PresignPut: %v", err)
 	}
@@ -176,6 +188,7 @@ func TestS3StoreUsesConfiguredTransferTTL(t *testing.T) {
 		"munki/packages/42/Installer.pkg",
 		"upload-id",
 		1,
+		declare("part bytes").CRC64NVME,
 		0,
 	)
 	if err != nil {
@@ -202,19 +215,9 @@ func TestS3StoreUsesConfiguredTransferTTL(t *testing.T) {
 
 func TestS3StorePresignedGetRequiresNoHeaders(t *testing.T) {
 	t.Parallel()
-	store, err := newS3Store(t.Context(), S3Config{
-		Bucket:    "woodstar",
-		Region:    "ap-southeast-2",
-		Endpoint:  "https://downloads.example",
-		AccessKey: "test-access-key",
-		SecretKey: "test-secret-key",
-		PathStyle: true,
-	}, time.Minute)
-	if err != nil {
-		t.Fatalf("newS3Store: %v", err)
-	}
+	store := newTestS3Store(t, time.Minute)
 
-	rawURL, err := store.PresignGet(t.Context(), "munki/packages/42/Installer.pkg", 0, getOptions{})
+	rawURL, err := store.PresignGet(t.Context(), "munki/packages/42/Installer.pkg", 0, getOptions{ContentType: "application/octet-stream", CacheControl: "private"})
 	if err != nil {
 		t.Fatalf("PresignGet: %v", err)
 	}
@@ -225,4 +228,20 @@ func TestS3StorePresignedGetRequiresNoHeaders(t *testing.T) {
 	if got := parsed.Query().Get("X-Amz-SignedHeaders"); got != "host" {
 		t.Fatalf("X-Amz-SignedHeaders = %q, want host", got)
 	}
+}
+
+func newTestS3Store(t *testing.T, transferTTL time.Duration) *s3Store {
+	t.Helper()
+	store, err := newS3Store(t.Context(), S3Config{
+		Bucket:    "woodstar",
+		Region:    "ap-southeast-2",
+		Endpoint:  "https://uploads.example",
+		AccessKey: "test-access-key",
+		SecretKey: "test-secret-key",
+		PathStyle: true,
+	}, transferTTL)
+	if err != nil {
+		t.Fatalf("newS3Store: %v", err)
+	}
+	return store
 }

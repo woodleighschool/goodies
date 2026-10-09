@@ -2,6 +2,7 @@ package bloby
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -25,8 +26,8 @@ type fileStore struct {
 	ttl            time.Duration
 }
 
-func (s *fileStore) beginUpload(ctx context.Context, key string, _ int64) (UploadAction, error) {
-	target, err := s.PresignPut(ctx, key, 0)
+func (s *fileStore) beginUpload(ctx context.Context, key string, content Content) (UploadAction, error) {
+	target, err := s.PresignPut(ctx, key, content, 0)
 	if err != nil {
 		return UploadAction{}, err
 	}
@@ -78,17 +79,12 @@ func (s *fileStore) resolve(key string) (string, error) {
 	return path, nil
 }
 
-func (s *fileStore) Open(_ context.Context, key string) (io.ReadCloser, objectInfo, error) {
-	f, err := s.openFile(key)
+func (s *fileStore) Open(_ context.Context, key string) (io.ReadCloser, error) {
+	file, err := s.openFile(key)
 	if err != nil {
-		return nil, objectInfo{}, err
+		return nil, err
 	}
-	info, err := f.Stat()
-	if err != nil {
-		_ = f.Close()
-		return nil, objectInfo{}, fmt.Errorf("stat %q: %w", key, err)
-	}
-	return f, objectInfo{Size: info.Size()}, nil
+	return file, nil
 }
 
 func (s *fileStore) openFile(key string) (*os.File, error) {
@@ -106,7 +102,9 @@ func (s *fileStore) openFile(key string) (*os.File, error) {
 	return f, nil
 }
 
-func (s *fileStore) Put(_ context.Context, key string, r io.Reader, _ putOptions) error {
+// Put writes beside the destination and renames into place only once the body
+// matched content, so a key never holds anything but its declared bytes.
+func (s *fileStore) Put(_ context.Context, key string, r io.Reader, content Content, _ putOptions) error {
 	path, err := s.resolve(key)
 	if err != nil {
 		return err
@@ -123,12 +121,18 @@ func (s *fileStore) Put(_ context.Context, key string, r io.Reader, _ putOptions
 	}
 	tmpName := tmp.Name()
 	defer func() { _ = os.Remove(tmpName) }()
-	if _, err := io.Copy(tmp, r); err != nil {
+	sum := sha256.New()
+	// One byte past the declaration exposes an oversized body without storing it.
+	written, err := io.Copy(io.MultiWriter(tmp, sum), io.LimitReader(r, content.SizeBytes+1))
+	if err != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("write %q: %w", key, err)
 	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close %q: %w", key, err)
+	}
+	if written != content.SizeBytes || hex.EncodeToString(sum.Sum(nil)) != content.SHA256 {
+		return contentMismatch("body is not the declared %d bytes", content.SizeBytes)
 	}
 	// #nosec G703 -- tmpName is created under the already-resolved storage dir.
 	if err := os.Chmod(tmpName, 0o600); err != nil {
@@ -171,12 +175,15 @@ func (s *fileStore) PresignGet(
 func (s *fileStore) PresignPut(
 	_ context.Context,
 	key string,
+	content Content,
 	ttl time.Duration,
 ) (UploadTarget, error) {
 	url, err := s.blobURL(capabilityClaims{
-		Op:  capabilityPut,
-		Key: key,
-		Exp: time.Now().Add(s.expires(ttl)).Unix(),
+		Op:        capabilityPut,
+		Key:       key,
+		Exp:       time.Now().Add(s.expires(ttl)).Unix(),
+		SizeBytes: content.SizeBytes,
+		SHA256:    content.SHA256,
 	})
 	if err != nil {
 		return UploadTarget{}, err
@@ -211,84 +218,47 @@ func (s *fileStore) expires(ttl time.Duration) time.Duration {
 	return ttlOrDefault(ttl, s.ttl)
 }
 
-// seal pins the staging inode without replacing an existing published file.
-// PUT commits with rename, so later PUTs cannot change the pinned inode.
-func (s *fileStore) seal(_ context.Context, stagingKey, key string) error {
-	source, err := s.resolve(stagingKey)
+// verify checks the stored size. Put admits only bytes with the declared
+// SHA-256, so a file of the right size is the declared content.
+func (s *fileStore) verify(_ context.Context, key string, content Content) error {
+	path, err := s.resolve(key)
 	if err != nil {
 		return err
 	}
-	destination, err := s.resolve(key)
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return ErrObjectNotFound
+	}
 	if err != nil {
-		return err
+		return fmt.Errorf("stat %q: %w", key, err)
 	}
-	if err := os.MkdirAll(filepath.Dir(destination), 0o750); err != nil {
-		return err
-	}
-	if err := os.Link(source, destination); err != nil && !errors.Is(err, os.ErrExist) {
-		// A concurrent finalizer may have removed staging after publishing.
-		if errors.Is(err, os.ErrNotExist) {
-			if _, statErr := os.Stat(destination); statErr == nil {
-				return nil
-			}
-			return ErrObjectNotFound
-		}
-		return fmt.Errorf("seal %q: %w", key, err)
+	if info.Size() != content.SizeBytes {
+		return contentMismatch("storage holds %d bytes, declared %d", info.Size(), content.SizeBytes)
 	}
 	return nil
 }
 
-func (s *fileStore) cleanupStaging(ctx context.Context, before time.Time, retain func(context.Context, string) (bool, error)) error {
-	root, err := os.OpenRoot(s.root)
+func (s *fileStore) head(_ context.Context, key string, n int64) ([]byte, error) {
+	file, err := s.openFile(key)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer func() { _ = root.Close() }()
-	return fs.WalkDir(root.FS(), strings.TrimSuffix(stagingPrefix, "/"), func(path string, entry fs.DirEntry, walkErr error) error {
-		if errors.Is(walkErr, os.ErrNotExist) {
-			return nil
-		}
-		if walkErr != nil {
-			return walkErr
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			return nil
-		}
-		info, err := entry.Info()
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		if info.ModTime().Before(before) {
-			keep, err := retain(ctx, path)
-			if err != nil {
-				return err
-			}
-			if keep {
-				return nil
-			}
-			if err := root.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return err
-			}
-			_ = root.Remove(filepath.Dir(path))
-		}
-		return nil
-	})
+	defer func() { _ = file.Close() }()
+	head, err := io.ReadAll(io.LimitReader(file, n))
+	if err != nil {
+		return nil, fmt.Errorf("read %q: %w", key, err)
+	}
+	return head, nil
 }
 
-func (s *fileStore) expiredCandidates(ctx context.Context, before time.Time) ([]string, error) {
+func (s *fileStore) expiredObjects(ctx context.Context, before time.Time) ([]string, error) {
 	root, err := os.OpenRoot(s.root)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = root.Close() }()
 	var keys []string
-	err = fs.WalkDir(root.FS(), strings.TrimSuffix(candidatePrefix, "/"), func(path string, entry fs.DirEntry, walkErr error) error {
+	err = fs.WalkDir(root.FS(), strings.TrimSuffix(objectPrefix, "/"), func(path string, entry fs.DirEntry, walkErr error) error {
 		if errors.Is(walkErr, os.ErrNotExist) {
 			return nil
 		}
