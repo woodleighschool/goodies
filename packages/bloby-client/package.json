@@ -33,6 +33,13 @@
     "prepublishOnly": "pnpm run typecheck && pnpm run test",
     "prepare": "pnpm run build"
   },
+  "dependencies": {
+    "@aws-sdk/crc64-nvme": "^3.972.41",
+    "@stablelib/sha256": "^2.0.1",
+    "p-map": "^7.0.8",
+    "p-retry": "^8.0.1",
+    "uint8array-extras": "^1.6.0"
+  },
   "devDependencies": {
     "@types/node": "^26.6.4",
     "tsx": "^4.23.15",
