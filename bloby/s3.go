@@ -411,7 +411,7 @@ func (s *s3Store) sealSmall(ctx context.Context, stagingKey, key string, source 
 	return err
 }
 
-func (s *s3Store) cleanupStaging(ctx context.Context, before time.Time) error {
+func (s *s3Store) cleanupStaging(ctx context.Context, before time.Time, retain func(context.Context, string) (bool, error)) error {
 	objects := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{
 		Bucket: aws.String(s.bucket), Prefix: aws.String(stagingPrefix),
 	})
@@ -422,6 +422,13 @@ func (s *s3Store) cleanupStaging(ctx context.Context, before time.Time) error {
 		}
 		for _, object := range page.Contents {
 			if object.LastModified != nil && object.LastModified.Before(before) {
+				keep, err := retain(ctx, aws.ToString(object.Key))
+				if err != nil {
+					return err
+				}
+				if keep {
+					continue
+				}
 				if err := s.Delete(ctx, aws.ToString(object.Key)); err != nil {
 					return err
 				}
@@ -438,6 +445,13 @@ func (s *s3Store) cleanupStaging(ctx context.Context, before time.Time) error {
 		}
 		for _, upload := range page.Uploads {
 			if upload.Initiated != nil && upload.Initiated.Before(before) {
+				keep, err := retain(ctx, aws.ToString(upload.Key))
+				if err != nil {
+					return err
+				}
+				if keep {
+					continue
+				}
 				if err := s.AbortMultipartUpload(ctx, aws.ToString(upload.Key), aws.ToString(upload.UploadId)); err != nil && !errors.Is(err, ErrMultipartUploadNotFound) {
 					return err
 				}

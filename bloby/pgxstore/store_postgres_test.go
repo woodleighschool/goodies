@@ -327,3 +327,43 @@ func TestWriteUncertainCommitPreservesNewlyReferencedBytes(t *testing.T) {
 		t.Fatalf("referenced bytes %q", body)
 	}
 }
+
+func TestPendingExpiryRespectsOwnershipButNotMetadata(t *testing.T) {
+	db, ctx := openTestDatabase(t)
+	registry := pgxstore.New(db)
+	for _, sql := range []string{
+		`CREATE TABLE claims (object_id bigint REFERENCES storage_objects(id) ON DELETE RESTRICT)`,
+		`CREATE TABLE metadata (object_id bigint REFERENCES storage_objects(id) ON DELETE CASCADE)`,
+	} {
+		if _, err := db.Exec(ctx, sql); err != nil {
+			t.Fatal(err)
+		}
+	}
+	retained, err := registry.CreatePending(ctx, "uploads", "retained.pkg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	abandoned, err := registry.CreatePending(ctx, "uploads", "abandoned.pkg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, `INSERT INTO claims VALUES ($1)`, retained.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, `INSERT INTO metadata VALUES ($1)`, abandoned.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, `UPDATE storage_objects SET updated_at=now()-interval '48 hours'`); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := registry.ClaimExpiredPending(ctx, time.Now().Add(-24*time.Hour), time.Now(), 100)
+	if err != nil || len(claimed) != 1 || claimed[0].ID != abandoned.ID {
+		t.Fatalf("claimed: %v %v", claimed, err)
+	}
+	if _, err := registry.RefreshPending(ctx, retained.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.RefreshPending(ctx, abandoned.ID); !errors.Is(err, bloby.ErrNotFound) {
+		t.Fatalf("expired revived: %v", err)
+	}
+}

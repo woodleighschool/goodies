@@ -3,6 +3,7 @@ package bloby
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -54,7 +55,7 @@ func (s *Service) sweepExpiredUploads(ctx context.Context) {
 	s.sweepUnreferenced(ctx, before)
 	// Signed PUTs can finish after finalization or deletion. Sweep staging by
 	// age independently of registry rows so those late writes are also removed.
-	if err := s.backend.cleanupStaging(ctx, before); err != nil && !errors.Is(err, context.Canceled) {
+	if err := s.backend.cleanupStaging(ctx, before, s.retainPendingBytes); err != nil && !errors.Is(err, context.Canceled) {
 		s.logger.WarnContext(ctx, "abandoned upload cleanup failed", "operation", "staging", "err", err)
 	}
 	keys, err := s.backend.expiredCandidates(ctx, before)
@@ -117,4 +118,34 @@ func pendingUploadMaxAge(transferTTL time.Duration) time.Duration {
 		return transferTTL + time.Hour
 	}
 	return minimumPendingUploadMaxAge
+}
+
+// retainPendingBytes preserves uploads until the registry has claimed their
+// expiry. Pending objects can be retained by application-owned work.
+func (s *Service) retainPendingBytes(ctx context.Context, key string) (bool, error) {
+	var idText string
+	switch {
+	case strings.HasPrefix(key, stagingPrefix):
+		parts := strings.Split(key, "/")
+		if len(parts) < 3 {
+			return false, nil
+		}
+		idText = parts[len(parts)-2]
+	case strings.HasPrefix(key, candidatePrefix):
+		idText, _, _ = strings.Cut(strings.TrimPrefix(key, candidatePrefix), "/")
+	default:
+		return false, nil
+	}
+	id, err := strconv.ParseInt(idText, 10, 64)
+	if err != nil {
+		return false, fmt.Errorf("parse storage object ID: %w", err)
+	}
+	object, err := s.registry.GetByID(ctx, id)
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return !object.Available(), nil
 }

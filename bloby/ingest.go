@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/gabriel-vasile/mimetype"
 )
@@ -135,14 +136,19 @@ func (s *Service) Finalize(
 		return nil, fmt.Errorf("%w: multipart upload must be completed before finalization", ErrInvalidInput)
 	}
 	key := candidateKey(object)
-	if err := s.backend.seal(ctx, object.stagingKey(), key); err != nil {
+	started := time.Now()
+	sealErr := s.backend.seal(ctx, object.stagingKey(), key)
+	s.logger.InfoContext(ctx, "storage finalization copy", "object_id", object.ID, "duration_ms", time.Since(started).Milliseconds(), "err", sealErr)
+	if err := sealErr; err != nil {
 		s.deleteCandidate(ctx, key)
 		if current, getErr := s.registry.GetByID(ctx, object.ID); getErr == nil && current.Available() {
 			return current, nil
 		}
 		return nil, err
 	}
+	started = time.Now()
 	metadata, err := s.inspect(ctx, key)
+	s.logger.InfoContext(ctx, "storage finalization inspection", "object_id", object.ID, "duration_ms", time.Since(started).Milliseconds(), "size_bytes", metadata.sizeBytes, "err", err)
 	if err != nil {
 		s.deleteCandidate(ctx, key)
 		if current, getErr := s.registry.GetByID(ctx, object.ID); getErr == nil && current.Available() {

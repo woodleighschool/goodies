@@ -460,3 +460,40 @@ func testCompetingFinalizers(t *testing.T, service *Service) {
 		t.Fatal(err)
 	}
 }
+
+func TestS3SweepRetainsPendingStagingAndMultipartBytes(t *testing.T) {
+	service, fixture := newS3Fixture(t)
+	direct, action, err := service.BeginDirect(t.Context(), "uploads", "direct.pkg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	uploadS3Target(t, *action.Target, "payload")
+	multipart, _, err := service.Begin(t.Context(), "uploads", "multipart.pkg", s3MultipartThreshold+1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-48 * time.Hour)
+	fixture.mu.Lock()
+	staged := fixture.objects[direct.stagingKey()]
+	staged.modified = old
+	fixture.objects[direct.stagingKey()] = staged
+	fixture.objects["_staging/uploads/999/orphan.pkg"] = s3FixtureObject{body: "orphan", modified: old}
+	for _, upload := range fixture.uploads {
+		upload.initiated = old
+	}
+	fixture.uploads["orphan"] = &s3FixtureUpload{key: "_objects/999/abandoned/orphan.pkg", initiated: old}
+	fixture.mu.Unlock()
+	service.sweepExpiredUploads(t.Context())
+	fixture.mu.Lock()
+	defer fixture.mu.Unlock()
+	if len(fixture.objects) != 1 || fixture.objects[direct.stagingKey()].body != "payload" {
+		t.Fatalf("staging: %+v", fixture.objects)
+	}
+	var retained bool
+	for _, upload := range fixture.uploads {
+		retained = retained || upload.key == multipart.stagingKey()
+	}
+	if len(fixture.uploads) != 1 || !retained {
+		t.Fatalf("multipart: %+v", fixture.uploads)
+	}
+}

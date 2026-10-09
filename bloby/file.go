@@ -238,7 +238,7 @@ func (s *fileStore) seal(_ context.Context, stagingKey, key string) error {
 	return nil
 }
 
-func (s *fileStore) cleanupStaging(ctx context.Context, before time.Time) error {
+func (s *fileStore) cleanupStaging(ctx context.Context, before time.Time, retain func(context.Context, string) (bool, error)) error {
 	root, err := os.OpenRoot(s.root)
 	if err != nil {
 		return err
@@ -265,6 +265,13 @@ func (s *fileStore) cleanupStaging(ctx context.Context, before time.Time) error 
 			return err
 		}
 		if info.ModTime().Before(before) {
+			keep, err := retain(ctx, path)
+			if err != nil {
+				return err
+			}
+			if keep {
+				return nil
+			}
 			if err := root.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return err
 			}

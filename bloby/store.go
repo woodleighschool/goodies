@@ -26,7 +26,7 @@ type backend interface {
 	TransferOrigin() string
 	beginUpload(ctx context.Context, key string, sizeBytes int64) (UploadAction, error)
 	seal(ctx context.Context, stagingKey, key string) error
-	cleanupStaging(ctx context.Context, before time.Time) error
+	cleanupStaging(ctx context.Context, before time.Time, retain func(context.Context, string) (bool, error)) error
 	expiredCandidates(ctx context.Context, before time.Time) ([]string, error)
 }
 

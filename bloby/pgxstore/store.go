@@ -158,9 +158,14 @@ func (s *Store) Delete(ctx context.Context, id int64) (*bloby.Object, error) {
 }
 
 func (s *Store) ClaimExpiredPending(ctx context.Context, updatedBefore, retryBefore time.Time, limit int) ([]bloby.Object, error) {
+	conditions, err := s.referenceConditions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	conditions = append(conditions, `available_at IS NULL AND (expired_at < $2 OR (expired_at IS NULL AND updated_at < $1))`)
 	rows, err := s.pool.Query(ctx, `WITH candidates AS (
-    SELECT id FROM storage_objects
-    WHERE available_at IS NULL AND (expired_at < $2 OR (expired_at IS NULL AND updated_at < $1))
+    SELECT id FROM storage_objects AS objects
+    WHERE `+strings.Join(conditions, " AND ")+`
     ORDER BY (expired_at IS NULL), COALESCE(expired_at, updated_at), id
     LIMIT $3 FOR UPDATE SKIP LOCKED
 )
@@ -178,10 +183,26 @@ RETURNING objects.id, objects.prefix, objects.filename, objects.content_type,
 // ListUnreferenced reads the referencing columns from the catalog, because the
 // tables that attach objects belong to the consumer.
 func (s *Store) ListUnreferenced(ctx context.Context, prefixes []string, availableBefore time.Time, limit int) ([]bloby.Object, error) {
+	conditions, err := s.referenceConditions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	conditions = append([]string{`prefix = ANY($1) AND available_at < $2 AND expired_at IS NULL`}, conditions...)
+	sql := objectSelectSQL + ` AS objects WHERE ` + strings.Join(conditions, " AND ") + ` ORDER BY id LIMIT $3`
+	rows, err := s.pool.Query(ctx, sql, prefixes, availableBefore, limit)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowToStructByPos[bloby.Object])
+}
+
+// referenceConditions finds ownership references. Cascading and nullable-on-delete
+// metadata belongs to the object and does not retain its bytes.
+func (s *Store) referenceConditions(ctx context.Context) ([]string, error) {
 	rows, err := s.pool.Query(ctx, `SELECT format('NOT EXISTS (SELECT 1 FROM %s AS referrer WHERE referrer.%I = objects.id)', fk.conrelid::regclass, referrer.attname)
 FROM pg_constraint AS fk
 JOIN pg_attribute AS referrer ON referrer.attrelid = fk.conrelid AND referrer.attnum = fk.conkey[1]
-WHERE fk.contype = 'f' AND fk.confrelid = 'storage_objects'::regclass AND cardinality(fk.conkey) = 1`)
+WHERE fk.contype = 'f' AND fk.confrelid = 'storage_objects'::regclass AND cardinality(fk.conkey) = 1 AND fk.confdeltype IN ('a', 'r')`)
 	if err != nil {
 		return nil, err
 	}
@@ -189,13 +210,7 @@ WHERE fk.contype = 'f' AND fk.confrelid = 'storage_objects'::regclass AND cardin
 	if err != nil {
 		return nil, err
 	}
-	conditions = append([]string{`prefix = ANY($1) AND available_at < $2 AND expired_at IS NULL`}, conditions...)
-	sql := objectSelectSQL + ` AS objects WHERE ` + strings.Join(conditions, " AND ") + ` ORDER BY id LIMIT $3`
-	rows, err = s.pool.Query(ctx, sql, prefixes, availableBefore, limit)
-	if err != nil {
-		return nil, err
-	}
-	return pgx.CollectRows(rows, pgx.RowToStructByPos[bloby.Object])
+	return conditions, nil
 }
 
 func (s *Store) DeleteExpiredPending(ctx context.Context, id int64) error {

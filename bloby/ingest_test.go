@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -376,5 +377,30 @@ func TestCandidateCleanupResolvesRegistryOwnership(t *testing.T) {
 				t.Fatalf("expired pending candidate remains: %v %v", keys, err)
 			}
 		})
+	}
+}
+
+func TestStagingSweepRetainsActivePendingBytes(t *testing.T) {
+	service, _ := newFileService(t)
+	object, action, err := service.BeginDirect(t.Context(), "documents/reports", "active.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	putTarget(t, service.TransferHandler(), *action.Target, "payload")
+	backend, ok := service.backend.(*fileStore)
+	if !ok {
+		t.Fatal("expected file backend")
+	}
+	staging := filepath.Join(backend.root, filepath.FromSlash(object.stagingKey()))
+	old := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(staging, old, old); err != nil {
+		t.Fatal(err)
+	}
+	service.sweepExpiredUploads(t.Context())
+	if _, err := os.Stat(staging); err != nil {
+		t.Fatalf("active upload bytes removed: %v", err)
+	}
+	if _, err := service.Finalize(t.Context(), object.ID, object.Prefix); err != nil {
+		t.Fatal(err)
 	}
 }
