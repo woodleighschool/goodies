@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/woodleighschool/goodies/compare/bloby-client/v1.2.1...bloby-client/v1.3.0) (2026-10-09)
+
+
+### Features
+
+* **bloby-client:** digest blobs and upload parts in parallel ([8c47995](https://github.com/woodleighschool/goodies/commit/8c47995bec9cd6a579c6f3a610396f906dd297da))
+
 ## [1.2.1](https://github.com/woodleighschool/goodies/compare/bloby-client/v1.2.0...bloby-client/v1.2.1) (2026-10-09)
 
 
