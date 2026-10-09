@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.0](https://github.com/woodleighschool/goodies/compare/bloby/v1.3.0...bloby/v1.4.0) (2026-10-09)
+
+
+### Features
+
+* **bloby:** verify uploads against declared content ([5ee3b7f](https://github.com/woodleighschool/goodies/commit/5ee3b7f54ba7a55540663b87738a6a28aad9b1e8))
+
 ## [1.3.0](https://github.com/woodleighschool/goodies/compare/bloby/v1.2.0...bloby/v1.3.0) (2026-10-09)
 
 
