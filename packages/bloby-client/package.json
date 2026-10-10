@@ -34,7 +34,7 @@
     "prepare": "pnpm run build"
   },
   "dependencies": {
-    "@aws-sdk/crc64-nvme": "^3.972.41",
+    "@aws-sdk/crc64-nvme": "^3.972.42",
     "@stablelib/sha256": "^2.0.1",
     "p-map": "^7.1.0",
     "p-retry": "^8.0.1",
