@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.1](https://github.com/woodleighschool/goodies/compare/bloby/v1.4.0...bloby/v1.4.1) (2026-10-10)
+
+
+### Bug Fixes
+
+* **go:** update aws-sdk-go-v2 monorepo ([#87](https://github.com/woodleighschool/goodies/issues/87)) ([145f062](https://github.com/woodleighschool/goodies/commit/145f062686bb955375f4d15d8f1601a9c2d88a2c))
+* **go:** update module github.com/aws/smithy-go (v1.28.4 → v1.28.5) ([#85](https://github.com/woodleighschool/goodies/issues/85)) ([0ca3c40](https://github.com/woodleighschool/goodies/commit/0ca3c40c3b5844b96177b49f970eee1928bdb5a9))
+
 ## [1.4.0](https://github.com/woodleighschool/goodies/compare/bloby/v1.3.0...bloby/v1.4.0) (2026-10-09)
 
 
