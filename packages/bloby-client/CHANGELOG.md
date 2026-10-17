@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.3.1](https://github.com/woodleighschool/goodies/compare/bloby-client/v1.3.0...bloby-client/v1.3.1) (2026-10-17)
+
+
+### Bug Fixes
+
+* **npm:** update dependency @aws-sdk/crc64-nvme (3.972.41 → 3.972.42) ([#95](https://github.com/woodleighschool/goodies/issues/95)) ([d2e8103](https://github.com/woodleighschool/goodies/commit/d2e8103ce47f45b82d2a20a35f7019c172e635fd))
+* **npm:** update dependency @aws-sdk/crc64-nvme (3.972.42 → 3.972.43) ([#101](https://github.com/woodleighschool/goodies/issues/101)) ([83612f4](https://github.com/woodleighschool/goodies/commit/83612f4680d035cf178080caf5b4a639e665e3c7))
+* **npm:** update dependency p-map (7.0.8 → 7.1.0) ([#94](https://github.com/woodleighschool/goodies/issues/94)) ([539742b](https://github.com/woodleighschool/goodies/commit/539742b7ee15e482ef354b8ddd996418e956c4bc))
+* **npm:** update dependency p-map (7.1.0 → 7.1.1) ([#99](https://github.com/woodleighschool/goodies/issues/99)) ([8d95814](https://github.com/woodleighschool/goodies/commit/8d9581480bfd6fd6ba642f56a0c20095998ba63f))
+
 ## [1.3.0](https://github.com/woodleighschool/goodies/compare/bloby-client/v1.2.1...bloby-client/v1.3.0) (2026-10-09)
 
 
