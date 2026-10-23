@@ -197,8 +197,8 @@ importers:
   packages/bloby-client:
     dependencies:
       '@aws-sdk/crc64-nvme':
-        specifier: ^3.972.44
-        version: 3.972.44
+        specifier: ^3.972.45
+        version: 3.972.45
       '@stablelib/sha256':
         specifier: ^2.0.1
         version: 2.0.1
@@ -224,20 +224,20 @@ importers:
 
 packages:
 
-  '@aws-sdk/checksums@3.1001.4':
-    resolution: {integrity: sha512-H8BiG/2DnfwydVxD1uDPLa1s1sfhRnVTbD2OwzfTr3WlJzgbIzICDXxBTlTMjbWNNCe4VS9X55fco+JI34L9kw==}
+  '@aws-sdk/checksums@3.1001.5':
+    resolution: {integrity: sha512-6erto9nK2OZO/woEgmFIaPh5gChgdNd7nL6jgAf8TAXz3/QHC8Pan2TFe9GYp3IxOIKCCGWPylSjtOHKfNzQlw==}
     engines: {node: '>=20.0.0'}
 
-  '@aws-sdk/core@3.978.4':
-    resolution: {integrity: sha512-JvGp6y9sPX8FSs2K/EmFMZcUfdkHxqGE45+oxwGC75OIh50j2e4cbx7zcR3BwNs2DSGqJdBja5h6Vy89iIDmRQ==}
+  '@aws-sdk/core@3.978.5':
+    resolution: {integrity: sha512-ruI0AWqcrfL20XDS6SwZIJFPOBZ6N0ADa9nLzWlBhxk1aoUjbUX3JkTR9vEmk7o35XpAHi68ahZ4T6RE2U9XyA==}
     engines: {node: '>=20.0.0'}
 
-  '@aws-sdk/crc64-nvme@3.972.44':
-    resolution: {integrity: sha512-qfHpCgw0ZNdknCrQkmjvwANNcEjhyPSWpVv/P+f6jH5Zxvva1ie6tcT3akN6XCbWxcTTcM2Jy1lsak6RV636pw==}
+  '@aws-sdk/crc64-nvme@3.972.45':
+    resolution: {integrity: sha512-aIMlNlpx/C01RqzMWulTRD+DgXMk90NwQb1UXPyXmh9F/JZPJBZ9JkQ9SajGZfQq4iRHHzwF2Wds/Dkqw0R0hQ==}
     engines: {node: '>=20.0.0'}
 
-  '@aws-sdk/types@3.974.6':
-    resolution: {integrity: sha512-v/clNZzZnDxGyvpHMOGpJKVXFAExJzUNAAjaWGdcx8QAcXLGwTaOkw33p5SHAi0YAioK32xB3hWwOekRVfmfKg==}
+  '@aws-sdk/types@3.975.0':
+    resolution: {integrity: sha512-WQlhs6juByzWOzj5fwxOx0mPJaEqMcG/sDpl3Id61B3XhKE63xY+0QWcnG+sWR/sCfprmreyUo1lM7IKZmHMzw==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/xml-builder@3.972.41':
@@ -526,12 +526,12 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@smithy/core@3.35.2':
-    resolution: {integrity: sha512-ejTukBuP/Pg3t9N8Ux+0zKsXeHWm7p6W3HbXFOyltKasSxZwCFmvTut7kBdZSCF3m9y1bXXyVu6p2xuMFcsTyQ==}
-    engines: {node: '>=18.0.0'}
-
   '@smithy/core@3.36.0':
     resolution: {integrity: sha512-3hJiwG1F5t1SoXqp/yOCmYXziyx7ZVqF63S5W6YU201e/qwVaHPex+E/3vvyY9a3ORq/b+BydeNZpP2saQ9X2g==}
+    engines: {node: '>=18.0.0'}
+
+  '@smithy/core@3.36.2':
+    resolution: {integrity: sha512-oRw0rB9QSUiCZfEs23G5F4Af+b2rQt1lItIICWu5IejFNd+uPM8SWqiKLMpQ6bX1Q7slsLbjuoE2niErFtkVPQ==}
     engines: {node: '>=18.0.0'}
 
   '@smithy/signature-v4@5.7.4':
@@ -763,31 +763,31 @@ packages:
 
 snapshots:
 
-  '@aws-sdk/checksums@3.1001.4':
+  '@aws-sdk/checksums@3.1001.5':
     dependencies:
-      '@aws-sdk/core': 3.978.4
-      '@aws-sdk/types': 3.974.6
-      '@smithy/core': 3.36.0
+      '@aws-sdk/core': 3.978.5
+      '@aws-sdk/types': 3.975.0
+      '@smithy/core': 3.36.2
       '@smithy/types': 4.19.0
       tslib: 2.8.1
 
-  '@aws-sdk/core@3.978.4':
+  '@aws-sdk/core@3.978.5':
     dependencies:
-      '@aws-sdk/types': 3.974.6
+      '@aws-sdk/types': 3.975.0
       '@aws-sdk/xml-builder': 3.972.41
       '@aws/lambda-invoke-store': 0.3.0
-      '@smithy/core': 3.36.0
+      '@smithy/core': 3.36.2
       '@smithy/signature-v4': 5.7.4
       '@smithy/types': 4.19.0
       bowser: 2.14.1
       tslib: 2.8.1
 
-  '@aws-sdk/crc64-nvme@3.972.44':
+  '@aws-sdk/crc64-nvme@3.972.45':
     dependencies:
-      '@aws-sdk/checksums': 3.1001.4
+      '@aws-sdk/checksums': 3.1001.5
       tslib: 2.8.1
 
-  '@aws-sdk/types@3.974.6':
+  '@aws-sdk/types@3.975.0':
     dependencies:
       '@smithy/types': 4.19.0
       tslib: 2.8.1
@@ -934,19 +934,19 @@ snapshots:
   '@oxlint/binding-win32-x64-msvc@1.89.0':
     optional: true
 
-  '@smithy/core@3.35.2':
+  '@smithy/core@3.36.0':
     dependencies:
       '@smithy/types': 4.19.0
       tslib: 2.8.1
 
-  '@smithy/core@3.36.0':
+  '@smithy/core@3.36.2':
     dependencies:
       '@smithy/types': 4.19.0
       tslib: 2.8.1
 
   '@smithy/signature-v4@5.7.4':
     dependencies:
-      '@smithy/core': 3.35.2
+      '@smithy/core': 3.36.0
       '@smithy/types': 4.19.0
       tslib: 2.8.1
 
