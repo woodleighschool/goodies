@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.4.1](https://github.com/woodleighschool/goodies/compare/bloby/v1.4.0...bloby/v1.4.1) (2026-10-23)
+
+
+### Bug Fixes
+
+* **go:** update aws-sdk-go-v2 monorepo ([#119](https://github.com/woodleighschool/goodies/issues/119)) ([b4cc1fa](https://github.com/woodleighschool/goodies/commit/b4cc1fad199ce9ecc74f6a9ee12f0e38baf53948))
+* **go:** update aws-sdk-go-v2 monorepo ([#87](https://github.com/woodleighschool/goodies/issues/87)) ([145f062](https://github.com/woodleighschool/goodies/commit/145f062686bb955375f4d15d8f1601a9c2d88a2c))
+* **go:** update module github.com/aws/smithy-go (v1.28.4 → v1.28.5) ([#85](https://github.com/woodleighschool/goodies/issues/85)) ([0ca3c40](https://github.com/woodleighschool/goodies/commit/0ca3c40c3b5844b96177b49f970eee1928bdb5a9))
+* **go:** update module github.com/gabriel-vasile/mimetype (v1.4.15 → v1.4.16) ([#111](https://github.com/woodleighschool/goodies/issues/111)) ([ef71b70](https://github.com/woodleighschool/goodies/commit/ef71b70a27bb189c4ed4e916656749d53575c525))
+* **go:** update module github.com/pressly/goose/v3 (v3.28.0 → v3.29.0) ([#98](https://github.com/woodleighschool/goodies/issues/98)) ([387a274](https://github.com/woodleighschool/goodies/commit/387a274366f714e5159f4686ecdc35fe32f193f9))
+
 ## [1.4.0](https://github.com/woodleighschool/goodies/compare/bloby/v1.3.0...bloby/v1.4.0) (2026-10-09)
 
 
