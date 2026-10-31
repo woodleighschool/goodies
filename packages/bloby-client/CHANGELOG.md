@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.2](https://github.com/woodleighschool/goodies/compare/bloby-client/v1.3.1...bloby-client/v1.3.2) (2026-10-31)
+
+
+### Bug Fixes
+
+* **npm:** update dependency @aws-sdk/crc64-nvme (3.972.45 → 3.972.46) ([#133](https://github.com/woodleighschool/goodies/issues/133)) ([8d21e4c](https://github.com/woodleighschool/goodies/commit/8d21e4c7007a1150daba3c5bef6b3c000e0a9095))
+
 ## [1.3.1](https://github.com/woodleighschool/goodies/compare/bloby-client/v1.3.0...bloby-client/v1.3.1) (2026-10-23)
 
 
