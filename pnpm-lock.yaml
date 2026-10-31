@@ -173,7 +173,7 @@ importers:
   packages/authz:
     devDependencies:
       '@types/node':
-        specifier: ^26.6.5
+        specifier: ^26.6.6
         version: 26.6.6
       '@types/react':
         specifier: ^19.3.0
@@ -213,7 +213,7 @@ importers:
         version: 1.6.0
     devDependencies:
       '@types/node':
-        specifier: ^26.6.5
+        specifier: ^26.6.6
         version: 26.6.6
       tsx:
         specifier: ^4.23.15
