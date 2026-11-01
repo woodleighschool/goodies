@@ -197,7 +197,7 @@ importers:
   packages/bloby-client:
     dependencies:
       '@aws-sdk/crc64-nvme':
-        specifier: ^3.972.47
+        specifier: ^3.972.48
         version: 3.972.48
       '@stablelib/sha256':
         specifier: ^2.0.1
