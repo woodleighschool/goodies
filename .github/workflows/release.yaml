@@ -19,6 +19,7 @@ env:
 jobs:
   package:
     runs-on: ubuntu-26.04
+    timeout-minutes: 15
     outputs:
       path: ${{ steps.package.outputs.path }}
     steps:
@@ -40,6 +41,7 @@ jobs:
     needs: package
     if: ${{ needs.package.outputs.path != '' }}
     runs-on: ubuntu-26.04
+    timeout-minutes: 15
     permissions:
       contents: read
       id-token: write
