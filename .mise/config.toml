@@ -20,15 +20,12 @@ lockfile = true
 config_roots = ["auth", "bloby", "pglock", "packages/*"]
 
 [tasks.deps]
-description = "Install Go module and Node workspace dependencies"
 depends = ["//auth:deps", "//bloby:deps", "//pglock:deps", "node-deps"]
 
 [tasks.node-deps]
-description = "Install Node workspace dependencies"
 run = "pnpm install --frozen-lockfile"
 
 [tasks.test]
-description = "Test every module and package"
 depends = [
   "//auth:test",
   "//bloby:test",
@@ -37,7 +34,6 @@ depends = [
 ]
 
 [tasks.check]
-description = "Check formatting, lint, tests, module metadata, builds, and vulnerabilities"
 run = [
   { task = "fmt-check" },
   { task = "lint" },
@@ -48,11 +44,9 @@ run = [
 ]
 
 [tasks.tidy]
-description = "Tidy every Go module"
 depends = ["//auth:tidy", "//bloby:tidy", "//pglock:tidy"]
 
 [tasks.tidy-check]
-description = "Check every Go module is tidy"
 depends = ["//auth:tidy-check", "//bloby:tidy-check", "//pglock:tidy-check"]
 
 [tasks.test-postgres]
@@ -60,7 +54,6 @@ description = "Test Bloby's registry and advisory locks against PostgreSQL"
 depends = ["//bloby:test-postgres", "//pglock:test-postgres"]
 
 [tasks.build]
-description = "Build every module and package"
 depends = [
   "//auth:build",
   "//bloby:build",
@@ -69,7 +62,6 @@ depends = [
 ]
 
 [tasks.lint]
-description = "Lint every module and package"
 depends = [
   "//auth:lint",
   "//bloby:lint",
@@ -82,17 +74,14 @@ description = "Apply Go lint fixes"
 depends = ["//auth:lint-fix", "//bloby:lint-fix", "//pglock:lint-fix"]
 
 [tasks.format]
-description = "Format the repository"
 depends = ["//auth:format", "//bloby:format", "//pglock:format"]
 run = ["mise fmt", "oxfmt"]
 
 [tasks.fmt-check]
-description = "Check repository formatting"
 depends = ["//auth:fmt-check", "//bloby:fmt-check", "//pglock:fmt-check"]
 run = ["mise fmt --check", "oxfmt --check"]
 
 [tasks.vulncheck]
-description = "Scan every Go module for known vulnerabilities"
 depends = ["//auth:vulncheck", "//bloby:vulncheck", "//pglock:vulncheck"]
 
 [hooks]
