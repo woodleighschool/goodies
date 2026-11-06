@@ -152,9 +152,7 @@ async function uploadPart(
     {
       retries: partAttempts - 1,
       signal,
-      onFailedAttempt: () => {
-        if (!signal.aborted) onLoaded(0);
-      },
+      onFailedAttempt: () => onLoaded(0),
     },
   );
   onLoaded(part.size);
