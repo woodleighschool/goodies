@@ -131,7 +131,7 @@ jobs:
           docker run --detach --publish 3900:3900 --publish 3903:3903 \
             --volume "$RUNNER_TEMP/garage.toml:/etc/garage.toml:ro" \
             --env GARAGE_DEFAULT_ACCESS_KEY --env GARAGE_DEFAULT_SECRET_KEY --env GARAGE_DEFAULT_BUCKET \
-            dxflrs/garage:v2.4.1 /garage server --single-node --default-bucket
+            dxflrs/garage:v2.4.1@sha256:9c96caa2612d3411acc5b0e6701fb238dbfba33e533a6d7d3d811a4b12d0d020 /garage server --single-node --default-bucket
           timeout 60 sh -c 'until curl -fsS http://127.0.0.1:3903/health >/dev/null; do sleep 0.5; done'
       - name: Test Bloby against Garage
         env:
