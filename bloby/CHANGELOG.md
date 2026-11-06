@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.4.2](https://github.com/woodleighschool/goodies/compare/bloby/v1.4.1...bloby/v1.4.2) (2026-11-06)
+
+
+### Bug Fixes
+
+* **go:** update aws-sdk-go-v2 monorepo ([#128](https://github.com/woodleighschool/goodies/issues/128)) ([54a01db](https://github.com/woodleighschool/goodies/commit/54a01dbb9065a33816038d040ed0d5bf96c5bd48))
+* **go:** update aws-sdk-go-v2 monorepo ([#132](https://github.com/woodleighschool/goodies/issues/132)) ([a089dc4](https://github.com/woodleighschool/goodies/commit/a089dc419bf9b9c07e5ab0c2fb78f1b2402af9d9))
+* **go:** update aws-sdk-go-v2 monorepo ([#145](https://github.com/woodleighschool/goodies/issues/145)) ([1bf96bf](https://github.com/woodleighschool/goodies/commit/1bf96bf4154ed8788316f94d63434fe8575cd9c2))
+* **go:** update aws-sdk-go-v2 monorepo ([#153](https://github.com/woodleighschool/goodies/issues/153)) ([6d1a21c](https://github.com/woodleighschool/goodies/commit/6d1a21cb5885fd4e874e18031f18a581b6217a77))
+* **go:** update module github.com/danielgtaylor/huma/v2 (v2.39.1 → v2.40.0) ([#129](https://github.com/woodleighschool/goodies/issues/129)) ([d3d77a9](https://github.com/woodleighschool/goodies/commit/d3d77a91cb54d37157b9169b70419113be0e6f31))
+* **go:** update module github.com/jackc/pgx/v5 (v5.11.0 → v5.12.0) ([#147](https://github.com/woodleighschool/goodies/issues/147)) ([8ec343b](https://github.com/woodleighschool/goodies/commit/8ec343b7510a2120df929901f386935e47042579))
+
 ## [1.4.1](https://github.com/woodleighschool/goodies/compare/bloby/v1.4.0...bloby/v1.4.1) (2026-10-23)
 
 
