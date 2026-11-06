@@ -7,7 +7,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.33.13
 	github.com/aws/aws-sdk-go-v2/credentials v1.20.13
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.114.6
-	github.com/aws/smithy-go v1.28.7
+	github.com/aws/smithy-go v1.28.8
 	github.com/danielgtaylor/huma/v2 v2.40.0
 	github.com/gabriel-vasile/mimetype v1.4.16
 	github.com/jackc/pgerrcode v0.0.0-20250907135507-afb5586c32a6
