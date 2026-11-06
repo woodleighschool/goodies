@@ -48,7 +48,7 @@ jobs:
         uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
         with:
           experimental: true
-          install_args: --locked go golangci-lint go:golang.org/x/vuln/cmd/govulncheck node pnpm oxfmt actionlint zizmor
+          install_args: --locked go golangci-lint go:golang.org/x/vuln/cmd/govulncheck node pnpm oxfmt jactionlint
 
       - name: Resolve Go cache
         id: go-cache
@@ -78,12 +78,9 @@ jobs:
           restore-keys: ${{ runner.os }}-${{ runner.arch }}-pnpm-
 
       - name: Lint workflows
-        run: actionlint -shellcheck= -ignore 'label "ubuntu-26\.04" is unknown'
-
-      - name: Check workflow security
         env:
           GH_TOKEN: ${{ github.token }}
-        run: zizmor --no-progress .
+        run: jactionlint --online --shellcheck= --format github
 
       - name: Install dependencies
         run: mise run deps
