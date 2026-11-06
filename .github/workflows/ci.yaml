@@ -3,6 +3,7 @@ name: CI
 on:
   workflow_dispatch:
   pull_request:
+    branches: [main]
   merge_group:
   push:
     branches: [main]
@@ -19,46 +20,13 @@ env:
   MISE_TASK_RUN_AUTO_INSTALL: "false"
 
 jobs:
-  workflow-lint:
-    if: >-
-      ${{ !(startsWith(github.head_ref, 'release-please--')
-      && github.event.pull_request.head.repo.full_name == github.repository) }}
-    name: Workflow Lint
-    runs-on: ubuntu-26.04
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Setup Mise
-        uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
-        with:
-          install: false
-
-      - name: Resolve linter versions
-        id: tools
-        run: |
-          echo "actionlint=$(mise config get tools.actionlint)" >> "$GITHUB_OUTPUT"
-          echo "zizmor=$(mise config get tools.zizmor)" >> "$GITHUB_OUTPUT"
-
-      - name: Lint workflows
-        uses: home-operations/.github/actions/workflow-lint@1d6eebfd2066f2aa84939e573e56f60d8d2ed85f # workflow-lint-v1.0.4
-        with:
-          actionlint-version: ${{ steps.tools.outputs.actionlint }}
-          zizmor-version: ${{ steps.tools.outputs.zizmor }}
-
   check:
-    if: >-
-      ${{ !(startsWith(github.head_ref, 'release-please--')
-      && github.event.pull_request.head.repo.full_name == github.repository) }}
-    name: Check
+    name: Build Success
     runs-on: ubuntu-26.04
+    timeout-minutes: 30
     services:
       postgres:
-        image: postgres:18
+        image: postgres:18@sha256:bd5dfa494a5a259704365813dbfa5fa6b3e69be7348d43b547f540c730478583
         env:
           POSTGRES_USER: goodies
           POSTGRES_PASSWORD: goodies
@@ -71,16 +39,76 @@ jobs:
           --health-timeout 3s
           --health-retries 30
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
+
+      - name: Setup Mise
+        uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
         with:
           experimental: true
-          install_args: --locked go golangci-lint node pnpm oxfmt go:golang.org/x/vuln/cmd/govulncheck
-      - run: mise run deps
-      - run: mise run check
-      - run: mise run test-postgres
+          install_args: --locked go golangci-lint go:golang.org/x/vuln/cmd/govulncheck node pnpm oxfmt actionlint zizmor
+
+      - name: Resolve Go cache
+        id: go-cache
+        run: |
+          echo "build=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+          echo "modules=$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+          echo "version=$(go env GOVERSION)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Go modules and build
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ steps.go-cache.outputs.build }}
+            ${{ steps.go-cache.outputs.modules }}
+          key: ${{ runner.os }}-${{ runner.arch }}-go-${{ steps.go-cache.outputs.version }}-${{ hashFiles('**/go.sum') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-go-
+
+      - name: Resolve pnpm store
+        id: pnpm
+        run: echo "store=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache pnpm store
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.pnpm.outputs.store }}
+          key: ${{ runner.os }}-${{ runner.arch }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-pnpm-
+
+      - name: Lint workflows
+        run: actionlint -shellcheck= -ignore 'label "ubuntu-26\.04" is unknown'
+
+      - name: Check workflow security
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: zizmor --no-progress .
+
+      - name: Install dependencies
+        run: mise run deps
+
+      - name: Check formatting
+        run: mise run fmt-check
+
+      - name: Check module tidiness
+        run: mise run tidy-check
+
+      - name: Lint modules and packages
+        run: mise run lint
+
+      - name: Test modules and packages
+        env:
+          BLOBY_TEST_DATABASE_URL: postgres://goodies:goodies@localhost:5432/postgres?sslmode=disable
+          PGLOCK_TEST_DATABASE_URL: postgres://goodies:goodies@localhost:5432/postgres?sslmode=disable
+        run: mise run test
+
+      - name: Build modules and packages
+        run: mise run build
+
+      - name: Check vulnerabilities
+        run: mise run vulncheck
+
       - name: Start Garage
         env:
           GARAGE_DEFAULT_ACCESS_KEY: GK0123456789abcdef0123456789abcdef
@@ -116,21 +144,6 @@ jobs:
           BLOBY_TEST_S3_ACCESS_KEY: GK0123456789abcdef0123456789abcdef
           BLOBY_TEST_S3_SECRET_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
         run: mise run //bloby:test-s3
+
       - name: Check package contents
         run: pnpm -r exec npm pack --dry-run
-
-  status:
-    if: ${{ !cancelled() }}
-    name: Build Success
-    needs:
-      - workflow-lint
-      - check
-    runs-on: ubuntu-26.04
-    permissions: {}
-    steps:
-      - name: Any jobs failed?
-        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
-        run: exit 1
-      - name: All jobs passed or skipped?
-        if: ${{ !(contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')) }}
-        run: echo "All jobs passed or skipped" && echo "${{ toJSON(needs.*.result) }}"
