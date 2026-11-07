@@ -197,8 +197,8 @@ importers:
   packages/bloby-client:
     dependencies:
       '@aws-sdk/crc64-nvme':
-        specifier: ^3.972.49
-        version: 3.972.49
+        specifier: ^3.972.51
+        version: 3.972.51
       '@stablelib/sha256':
         specifier: ^2.0.1
         version: 2.0.1
@@ -224,16 +224,16 @@ importers:
 
 packages:
 
-  '@aws-sdk/checksums@3.1002.1':
-    resolution: {integrity: sha512-CXNESwkQC9jdrUG6cKXBfudVt1frGcYQykcCYbNclVrsewuGMbo3PlFjRteMe4OftNAqhyc3xC2jTz7SUqLasQ==}
+  '@aws-sdk/checksums@3.1002.3':
+    resolution: {integrity: sha512-lBwLpni4uWNIH0UxgP8hR3XiGSunn9C7DrhzQzte/uc4chFpghMpf4GkiBrvvygs3NTp1VI5QdD9ZbRA0hM0OQ==}
     engines: {node: '>=20.0.0'}
 
-  '@aws-sdk/core@3.979.1':
-    resolution: {integrity: sha512-ayOlV1VhLNMiq8PW9ZkVobG4gkldnUoHjG69yy2b8j+VYFlhz/uAL7ZdYQAoQ+eShtGUdNDnnG5rxDg6yUJrOg==}
+  '@aws-sdk/core@3.980.1':
+    resolution: {integrity: sha512-W7jDWUPucezIUjFZpr8MudQQtz/m6yPMyAFrOyyQcHjuF4UrZdcCdP8eV1js06U9sH3dxp0AbhN+s9uHwQyXzQ==}
     engines: {node: '>=20.0.0'}
 
-  '@aws-sdk/crc64-nvme@3.972.49':
-    resolution: {integrity: sha512-SGknsNXSVLK6f8M+mzvbwA/bYkbVV955VbVNKkZRTzgyvSoRPmyBqJfeOP5wYF8pnGKJDfVbYhdr2DtfiBLMHQ==}
+  '@aws-sdk/crc64-nvme@3.972.51':
+    resolution: {integrity: sha512-xeN0pIKEJAFYJhBT2yZw57VC/p8KP4T/1gxrqU5zm7mi+swAldWmkUQmb2wwYUsu9egLyhW/zOMpmoFpxPdE+g==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/types@3.975.0':
@@ -760,15 +760,15 @@ packages:
 
 snapshots:
 
-  '@aws-sdk/checksums@3.1002.1':
+  '@aws-sdk/checksums@3.1002.3':
     dependencies:
-      '@aws-sdk/core': 3.979.1
+      '@aws-sdk/core': 3.980.1
       '@aws-sdk/types': 3.975.0
       '@smithy/core': 3.38.0
       '@smithy/types': 4.19.0
       tslib: 2.8.1
 
-  '@aws-sdk/core@3.979.1':
+  '@aws-sdk/core@3.980.1':
     dependencies:
       '@aws-sdk/types': 3.975.0
       '@aws-sdk/xml-builder': 3.972.42
@@ -779,9 +779,9 @@ snapshots:
       bowser: 2.15.0
       tslib: 2.8.1
 
-  '@aws-sdk/crc64-nvme@3.972.49':
+  '@aws-sdk/crc64-nvme@3.972.51':
     dependencies:
-      '@aws-sdk/checksums': 3.1002.1
+      '@aws-sdk/checksums': 3.1002.3
       tslib: 2.8.1
 
   '@aws-sdk/types@3.975.0':
