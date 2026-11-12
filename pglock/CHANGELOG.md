@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/woodleighschool/goodies/compare/pglock/v0.1.1...pglock/v0.1.2) (2026-11-12)
+
+
+### Bug Fixes
+
+* **go:** update module github.com/jackc/pgx/v5 (v5.11.0 → v5.12.0) ([#147](https://github.com/woodleighschool/goodies/issues/147)) ([8ec343b](https://github.com/woodleighschool/goodies/commit/8ec343b7510a2120df929901f386935e47042579))
+
 ## [0.1.1](https://github.com/woodleighschool/goodies/compare/pglock/v0.1.0...pglock/v0.1.1) (2026-09-12)
 
 
