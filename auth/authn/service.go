@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/alexedwards/scs/v2"
+	authoidc "github.com/woodleighschool/goodies/auth/oidc"
 	"golang.org/x/time/rate"
 )
 
@@ -52,7 +53,7 @@ type Config struct {
 	// Nil relies on the store's identity eligibility rules.
 	Admit func(context.Context, int64) (bool, error)
 	// OIDC enables SSO when non-nil. Discovery completes before New returns.
-	OIDC *OIDCConfig
+	OIDC *authoidc.Config
 	// SuccessRedirect defaults to "/"; FailureRedirect defaults to "/login".
 	SuccessRedirect string
 	FailureRedirect string
@@ -66,7 +67,7 @@ type Service struct {
 	principals      Store
 	sessions        *scs.SessionManager
 	dummyHash       string
-	oidc            *oidcProvider
+	oidc            *authoidc.Client
 	admit           func(context.Context, int64) (bool, error)
 	successRedirect string
 	failureRedirect string
@@ -98,7 +99,7 @@ func New(ctx context.Context, principals Store, sessions *scs.SessionManager, cf
 		logger: cfg.Logger, loginLimiter: rate.NewLimiter(rate.Every(time.Minute/10), 4),
 	}
 	if cfg.OIDC != nil {
-		service.oidc, err = configureOIDC(ctx, *cfg.OIDC)
+		service.oidc, err = authoidc.New(ctx, sessions, *cfg.OIDC)
 		if err != nil {
 			return nil, err
 		}

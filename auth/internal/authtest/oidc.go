@@ -38,6 +38,9 @@ func OIDCProvider(t *testing.T, key *rsa.PrivateKey, claim string, alter func(ma
 				http.Error(w, "invalid form", 400)
 				return
 			}
+			if r.Form.Get("code_verifier") == "" {
+				t.Error("missing PKCE verifier")
+			}
 			if r.Form.Get("grant_type") != "authorization_code" || r.Form.Get("redirect_uri") != "https://app.example.invalid/callback" {
 				t.Errorf("token exchange form=%v", r.Form)
 			}

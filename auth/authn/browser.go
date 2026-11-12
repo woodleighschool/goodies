@@ -4,6 +4,8 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+
+	authoidc "github.com/woodleighschool/goodies/auth/oidc"
 )
 
 // SSOStart redirects to the configured identity provider using the loaded session.
@@ -12,7 +14,7 @@ func (s *Service) SSOStart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "sso not configured", http.StatusNotFound)
 		return
 	}
-	authURL, err := s.beginSSO(r.Context())
+	authURL, err := s.oidc.Begin(r.Context())
 	if err != nil {
 		s.logger.ErrorContext(r.Context(), "oidc start failed", "operation", "oidc-start", "err", err)
 		http.Error(w, "sso sign-in failed", http.StatusInternalServerError)
@@ -50,9 +52,9 @@ func (s *Service) SSOCallback(w http.ResponseWriter, r *http.Request) {
 
 func oidcUserMessage(err error) string {
 	switch {
-	case errors.Is(err, ErrSSOStateMismatch):
+	case errors.Is(err, authoidc.ErrStateMismatch):
 		return "sso state mismatch; try again"
-	case errors.Is(err, ErrSSONonceMismatch):
+	case errors.Is(err, authoidc.ErrNonceMismatch):
 		return "sso nonce mismatch; try again"
 	case errors.Is(err, ErrSSOUnknownUser), errors.Is(err, ErrNotAuthenticated):
 		return "no account for this identity"

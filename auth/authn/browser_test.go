@@ -15,6 +15,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	authoidc "github.com/woodleighschool/goodies/auth/oidc"
 )
 
 func TestBrowserSSOAdmissionAndRedirects(t *testing.T) {
@@ -37,7 +39,7 @@ func TestBrowserSSOAdmissionAndRedirects(t *testing.T) {
 			var logs bytes.Buffer
 			admitted, admissionErr := tc.admitted, tc.admissionErr
 			browser, err := New(t.Context(), &principalStore{principal: &Principal{ID: 42}}, sessions, Config{
-				OIDC:            &OIDCConfig{IssuerURL: provider.URL, ClientID: "client-id", ClientSecret: "synthetic-secret", RedirectURL: "https://app.example.invalid/callback"},
+				OIDC:            &authoidc.Config{IssuerURL: provider.URL, ClientID: "client-id", ClientSecret: "synthetic-secret", RedirectURL: "https://app.example.invalid/callback"},
 				Admit:           func(context.Context, int64) (bool, error) { return admitted, admissionErr },
 				SuccessRedirect: "/app/home", FailureRedirect: "/sign-in?from=app",
 				Logger: slog.New(slog.NewJSONHandler(&logs, nil)),

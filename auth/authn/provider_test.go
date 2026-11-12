@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/woodleighschool/goodies/auth/internal/authtest"
+
+	authoidc "github.com/woodleighschool/goodies/auth/oidc"
 )
 
 func TestOIDCDiscoveryAndCallback(t *testing.T) {
@@ -29,7 +31,7 @@ func TestOIDCDiscoveryAndCallback(t *testing.T) {
 	}{
 		{name: "valid"},
 		{name: "custom claim", claim: "preferred_username"},
-		{name: "nonce mismatch", alter: func(c map[string]any) { c["nonce"] = "wrong" }, errorIs: ErrSSONonceMismatch, wantError: true},
+		{name: "nonce mismatch", alter: func(c map[string]any) { c["nonce"] = "wrong" }, errorIs: authoidc.ErrNonceMismatch, wantError: true},
 		{name: "missing email", alter: func(c map[string]any) { delete(c, "email") }, errorIs: ErrSSOEmailClaimEmpty, wantError: true},
 		{name: "wrong audience", alter: func(c map[string]any) { c["aud"] = "another-client" }, wantError: true},
 		{name: "wrong issuer", alter: func(c map[string]any) { c["iss"] = "https://other.example.invalid" }, wantError: true},
@@ -46,14 +48,14 @@ func TestOIDCDiscoveryAndCallback(t *testing.T) {
 			issuer := server.URL
 			sessions, ctx := loadedSession(t)
 			store := &principalStore{principal: &Principal{ID: 42}, err: tc.storeErr}
-			service, err := New(ctx, store, sessions, Config{Admit: allowPrincipal, OIDC: &OIDCConfig{IssuerURL: issuer, ClientID: "client-id", ClientSecret: "synthetic-secret", RedirectURL: "https://app.example.invalid/callback", EmailClaim: tc.claim}})
+			service, err := New(ctx, store, sessions, Config{Admit: allowPrincipal, OIDC: &authoidc.Config{IssuerURL: issuer, ClientID: "client-id", ClientSecret: "synthetic-secret", RedirectURL: "https://app.example.invalid/callback", EmailClaim: tc.claim}})
 			if err != nil {
 				t.Fatal(err)
 			}
 			if !service.SSOEnabled() {
 				t.Fatal("SSO not enabled after discovery")
 			}
-			authURL, err := service.beginSSO(ctx)
+			authURL, err := service.oidc.Begin(ctx)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -78,7 +80,7 @@ func TestOIDCDiscoveryAndCallback(t *testing.T) {
 			if sessions.GetInt64(ctx, sessionUserIDKey) != 0 {
 				t.Fatal("SSO started session before admission")
 			}
-			if _, err := service.completeSSO(ctx, query.Get("state"), query.Get("nonce")); !errors.Is(err, ErrSSOStateMismatch) {
+			if _, err := service.completeSSO(ctx, query.Get("state"), query.Get("nonce")); !errors.Is(err, authoidc.ErrStateMismatch) {
 				t.Fatalf("replayed callback: %v", err)
 			}
 		})
@@ -94,29 +96,20 @@ func TestSSOConfigurationAndStateErrors(t *testing.T) {
 	if service.SSOEnabled() {
 		t.Fatal("unconfigured SSO enabled")
 	}
-	if _, err := New(ctx, &principalStore{}, sessions, Config{Admit: allowPrincipal, OIDC: &OIDCConfig{}}); !errors.Is(err, ErrSSONotConfigured) {
+	if _, err := New(ctx, &principalStore{}, sessions, Config{Admit: allowPrincipal, OIDC: &authoidc.Config{}}); !errors.Is(err, authoidc.ErrNotConfigured) {
 		t.Fatalf("empty configuration: %v", err)
 	}
-	if _, err := service.beginSSO(ctx); !errors.Is(err, ErrSSONotConfigured) {
+	if _, err := service.oidc.Begin(ctx); !errors.Is(err, authoidc.ErrNotConfigured) {
 		t.Fatalf("begin: %v", err)
 	}
-	if _, err := service.completeSSO(ctx, "state", "code"); !errors.Is(err, ErrSSONotConfigured) {
+	if _, err := service.completeSSO(ctx, "state", "code"); !errors.Is(err, authoidc.ErrNotConfigured) {
 		t.Fatalf("complete: %v", err)
-	}
-	service.oidc = &oidcProvider{}
-	sessions.Put(ctx, ssoStateSessionKey, "expected-state")
-	sessions.Put(ctx, ssoNonceSessionKey, "expected-nonce")
-	if _, err := service.completeSSO(ctx, "wrong-state", "code"); !errors.Is(err, ErrSSOStateMismatch) {
-		t.Fatalf("state: %v", err)
-	}
-	if sessions.GetString(ctx, ssoStateSessionKey) != "" || sessions.GetString(ctx, ssoNonceSessionKey) != "" {
-		t.Fatal("callback did not consume state and nonce")
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unavailable", http.StatusServiceUnavailable)
 	}))
 	t.Cleanup(server.Close)
-	if _, err := New(ctx, &principalStore{}, sessions, Config{Admit: allowPrincipal, OIDC: &OIDCConfig{IssuerURL: server.URL}}); err == nil || !strings.Contains(err.Error(), "discover oidc issuer") {
+	if _, err := New(ctx, &principalStore{}, sessions, Config{Admit: allowPrincipal, OIDC: &authoidc.Config{IssuerURL: server.URL}}); err == nil || !strings.Contains(err.Error(), "discover oidc issuer") {
 		t.Fatalf("discovery failure: %v", err)
 	}
 }
