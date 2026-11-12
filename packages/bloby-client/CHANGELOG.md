@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.3.2](https://github.com/woodleighschool/goodies/compare/bloby-client/v1.3.1...bloby-client/v1.3.2) (2026-11-12)
+
+
+### Bug Fixes
+
+* **npm:** update dependency @aws-sdk/crc64-nvme (3.972.45 → 3.972.46) ([#133](https://github.com/woodleighschool/goodies/issues/133)) ([8d21e4c](https://github.com/woodleighschool/goodies/commit/8d21e4c7007a1150daba3c5bef6b3c000e0a9095))
+* **npm:** update dependency @aws-sdk/crc64-nvme (3.972.48 → 3.972.47) ([#143](https://github.com/woodleighschool/goodies/issues/143)) ([6fcffce](https://github.com/woodleighschool/goodies/commit/6fcffce580b66d6132982e2700daedea69e0f223))
+* **npm:** update dependency @aws-sdk/crc64-nvme (3.972.48 → 3.972.48) ([#144](https://github.com/woodleighschool/goodies/issues/144)) ([63dffc2](https://github.com/woodleighschool/goodies/commit/63dffc27f948d4c2233ac09798ab041ab7414256))
+* **npm:** update dependency @aws-sdk/crc64-nvme (3.972.48 → 3.972.49) ([#146](https://github.com/woodleighschool/goodies/issues/146)) ([351f624](https://github.com/woodleighschool/goodies/commit/351f6245469fa1ed91f0933636ed25ff4fff3f02))
+* **npm:** update dependency @aws-sdk/crc64-nvme (3.972.49 → 3.972.51) ([#155](https://github.com/woodleighschool/goodies/issues/155)) ([e172336](https://github.com/woodleighschool/goodies/commit/e172336b65720840c155e569aa82d7901107eb37))
+* **npm:** update dependency @aws-sdk/crc64-nvme (3.972.51 → 3.972.52) ([#164](https://github.com/woodleighschool/goodies/issues/164)) ([87ba7f3](https://github.com/woodleighschool/goodies/commit/87ba7f3408547debd649e80b718d56cea51ceff2))
+* **npm:** update dependency @aws-sdk/crc64-nvme (3.972.52 → 3.972.53) ([#168](https://github.com/woodleighschool/goodies/issues/168)) ([410e0f1](https://github.com/woodleighschool/goodies/commit/410e0f1034c42f7a43c025cf2aa4b043da2478bc))
+* **npm:** update dependency p-retry (8.0.1 → 9.0.0) ([#150](https://github.com/woodleighschool/goodies/issues/150)) ([eda9955](https://github.com/woodleighschool/goodies/commit/eda99555b715f82f2d300144d2c30e77e3903794))
+
 ## [1.3.1](https://github.com/woodleighschool/goodies/compare/bloby-client/v1.3.0...bloby-client/v1.3.1) (2026-10-23)
 
 
