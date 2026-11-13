@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.3](https://github.com/woodleighschool/goodies/compare/bloby/v1.4.2...bloby/v1.4.3) (2026-11-13)
+
+
+### Bug Fixes
+
+* **go:** update module github.com/jackc/pgx/v5 (v5.12.0 → v5.13.0) ([#169](https://github.com/woodleighschool/goodies/issues/169)) ([beffe63](https://github.com/woodleighschool/goodies/commit/beffe63760d9ea328307a2ff3c2c2f6a53eeb595))
+
 ## [1.4.2](https://github.com/woodleighschool/goodies/compare/bloby/v1.4.1...bloby/v1.4.2) (2026-11-12)
 
 
