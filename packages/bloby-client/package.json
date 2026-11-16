@@ -35,7 +35,7 @@
   },
   "dependencies": {
     "@aws-sdk/crc64-nvme": "^3.972.53",
-    "@stablelib/sha256": "^2.0.1",
+    "@stablelib/sha256": "^2.0.2",
     "p-map": "^7.1.1",
     "p-retry": "^9.0.0",
     "uint8array-extras": "^1.6.0"
