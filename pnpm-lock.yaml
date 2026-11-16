@@ -209,8 +209,8 @@ importers:
         specifier: ^3.972.53
         version: 3.972.53
       '@stablelib/sha256':
-        specifier: ^2.0.1
-        version: 2.0.1
+        specifier: ^2.0.2
+        version: 2.0.2
       p-map:
         specifier: ^7.1.1
         version: 7.1.1
@@ -556,8 +556,8 @@ packages:
   '@stablelib/int@2.0.1':
     resolution: {integrity: sha512-Ht63fQp3wz/F8U4AlXEPb7hfJOIILs8Lq55jgtD7KueWtyjhVuzcsGLSTAWtZs3XJDZYdF1WcSKn+kBtbzupww==}
 
-  '@stablelib/sha256@2.0.1':
-    resolution: {integrity: sha512-LA1PaLDc6Lv72ppA4PEZ7abDE741KfG7k7QhBiUyIfViMqrwWv8HqQQFPeuPfS4k2OxFv++IAgc8HlvdBatD+w==}
+  '@stablelib/sha256@2.0.2':
+    resolution: {integrity: sha512-+2RcJrR/b8bHgZ09TnuFgA213qxKLyZm3+DyVZ9OQH0hGuJYOiic897Tmc65qscQpAqOyiH9irVKQaBopUEmfw==}
 
   '@stablelib/wipe@2.0.1':
     resolution: {integrity: sha512-1eU2K9EgOcV4qc9jcP6G72xxZxEm5PfeI5H55l08W95b4oRJaqhmlWRc4xZAm6IVSKhVNxMi66V67hCzzuMTAg==}
@@ -962,7 +962,7 @@ snapshots:
 
   '@stablelib/int@2.0.1': {}
 
-  '@stablelib/sha256@2.0.1':
+  '@stablelib/sha256@2.0.2':
     dependencies:
       '@stablelib/binary': 2.0.1
       '@stablelib/hash': 2.0.0
