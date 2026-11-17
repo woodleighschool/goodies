@@ -682,7 +682,12 @@ func TestS3FinalizeRetriesAfterLostCompletionResponse(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	fixture.afterComplete = cancel
+	// The caller gives up and the connection drops before the response is
+	// written. A written response can still reach the client after the cancel.
+	fixture.afterComplete = func() {
+		cancel()
+		panic(http.ErrAbortHandler)
+	}
 	if _, err := service.Finalize(ctx, object.ID, object.Prefix); !errors.Is(err, context.Canceled) {
 		t.Fatalf("finalize error = %v, want a canceled completion", err)
 	}
