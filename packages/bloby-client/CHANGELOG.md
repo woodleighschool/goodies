@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.3](https://github.com/woodleighschool/goodies/compare/bloby-client/v1.3.2...bloby-client/v1.3.3) (2026-11-21)
+
+
+### Bug Fixes
+
+* **npm:** update dependency @stablelib/sha256 (2.0.1 → 2.0.2) ([#174](https://github.com/woodleighschool/goodies/issues/174)) ([c358927](https://github.com/woodleighschool/goodies/commit/c3589278aa3072dcc7f5cc1aaeb82e4a4cc9b440))
+
 ## [1.3.2](https://github.com/woodleighschool/goodies/compare/bloby-client/v1.3.1...bloby-client/v1.3.2) (2026-11-12)
 
 
