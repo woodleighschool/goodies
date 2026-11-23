@@ -49,7 +49,6 @@ depends = ["//auth:tidy", "//bloby:tidy", "//pglock:tidy"]
 depends = ["//auth:tidy-check", "//bloby:tidy-check", "//pglock:tidy-check"]
 
 [tasks.test-postgres]
-description = "Test Bloby's registry and advisory locks against PostgreSQL"
 depends = ["//bloby:test-postgres", "//pglock:test-postgres"]
 
 [tasks.build]
@@ -69,7 +68,7 @@ depends = [
 ]
 
 [tasks.lint-fix]
-description = "Apply Go lint fixes"
+description = "Go only"
 depends = ["//auth:lint-fix", "//bloby:lint-fix", "//pglock:lint-fix"]
 
 [tasks.format]

@@ -8,7 +8,6 @@ run = "go mod download"
 run = "go build ./..."
 
 [tasks.test]
-description = "Vet Go code and run race-enabled tests"
 run = ["go vet ./...", "go test -race -count=1 ./..."]
 
 [tasks.tidy]

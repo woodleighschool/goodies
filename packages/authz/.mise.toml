@@ -11,6 +11,5 @@ depends = ["//:node-deps"]
 run = "pnpm run typecheck"
 
 [tasks.lint]
-description = "Lint and type-check"
 depends = ["//:node-deps"]
 run = "pnpm run lint"
