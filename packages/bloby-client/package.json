@@ -41,7 +41,7 @@
     "uint8array-extras": "^1.6.0"
   },
   "devDependencies": {
-    "@types/node": "^26.6.6",
+    "@types/node": "^26.6.7",
     "tsx": "^4.23.15",
     "typescript": "~7.0.2"
   }
