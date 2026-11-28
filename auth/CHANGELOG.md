@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.1](https://github.com/woodleighschool/goodies/compare/auth/v1.2.0...auth/v1.2.1) (2026-11-28)
+
+
+### Bug Fixes
+
+* **go:** update module github.com/danielgtaylor/huma/v2 (v2.40.0 → v2.41.0) ([#182](https://github.com/woodleighschool/goodies/issues/182)) ([2b0ccf1](https://github.com/woodleighschool/goodies/commit/2b0ccf125c1ba9ce9c95a058fec8fa75213d5bec))
+
 ## [1.2.0](https://github.com/woodleighschool/goodies/compare/auth/v1.1.0...auth/v1.2.0) (2026-11-12)
 
 
